@@ -32,6 +32,7 @@
 #include "bitboard.h"
 #include "misc.h"
 #include "movegen.h"
+#include "nnue/nnue_architecture.h"
 #include "tt.h"
 #include "uci.h"
 
@@ -63,7 +64,7 @@ std::ostream& operator<<(std::ostream& os, const Position& pos) {
         for (File f = FILE_A; f <= FILE_I; ++f)
             os << " | " << PieceToChar[pos.piece_on(make_square(f, r))];
 
-        os << " | " << r << "\n +---+---+---+---+---+---+---+---+---+\n";
+        os << " | " << int(r) << "\n +---+---+---+---+---+---+---+---+---+\n";
     }
 
     os << "   a   b   c   d   e   f   g   h   i\n"
@@ -555,7 +556,7 @@ DirtyPiece Position::do_move(Move                      m,
     {
         st->nonPawnKey[us] ^= Zobrist::psq[pc][from] ^ Zobrist::psq[pc][to];
 
-        if (type_of(pc) == KNIGHT && type_of(pc) == CANNON)
+        if (type_of(pc) == KNIGHT || type_of(pc) == CANNON)
             st->minorPieceKey ^= Zobrist::psq[pc][from] ^ Zobrist::psq[pc][to];
     }
 
@@ -566,11 +567,6 @@ DirtyPiece Position::do_move(Move                      m,
       (mid_mirror_before[0] != Eval::NNUE::FeatureSet::requires_mid_mirror(*this, us));
     dp.requires_refresh[them] |=
       (mid_mirror_before[1] != Eval::NNUE::FeatureSet::requires_mid_mirror(*this, them));
-
-    // Update the key with the final value
-    st->key = k;
-    if (tt)
-        prefetch(tt->first_entry(key()));
 
     // Set capture piece
     st->capturedPiece = captured;
@@ -583,6 +579,11 @@ DirtyPiece Position::do_move(Move                      m,
 
     // Update king attacks used for fast check detection
     set_check_info();
+
+    // Update the key with the final value
+    st->key = k;
+    if (tt)
+        prefetch(tt->first_entry(key()));
 
     assert(pos_is_ok());
 
@@ -677,6 +678,8 @@ bool Position::see_ge(Move m, int threshold) const {
 
     Square from = m.from_sq(), to = m.to_sq();
 
+    assert(piece_on(from) != NO_PIECE);
+
     int swap = PieceValue[piece_on(to)] - threshold;
     if (swap < 0)
         return false;
@@ -691,10 +694,8 @@ bool Position::see_ge(Move m, int threshold) const {
     Bitboard attackers = attackers_to(to, occupied);
 
     // Flying general
-    if (attackers & pieces(stm, KING))
-        attackers |= attacks_bb<ROOK>(to, occupied & ~pieces(ROOK)) & pieces(~stm, KING);
-    if (attackers & pieces(~stm, KING))
-        attackers |= attacks_bb<ROOK>(to, occupied & ~pieces(ROOK)) & pieces(stm, KING);
+    if (attackers & pieces(KING))
+        attackers |= attacks_bb<ROOK>(to, occupied & ~pieces(ROOK)) & pieces(KING);
 
     Bitboard nonCannons = attackers & ~pieces(CANNON);
     Bitboard cannons    = attackers & pieces(CANNON);
@@ -789,8 +790,10 @@ bool Position::see_ge(Move m, int threshold) const {
 }
 
 
-// Like do_move(), but a little lighter
-std::pair<Piece, int> Position::light_do_move(Move m) {
+// A lighter version of do_move(), used in chasing detection
+std::pair<Piece, int> Position::do_move(Move m) {
+
+    assert(capture(m));
 
     Square from     = m.from_sq();
     Square to       = m.to_sq();
@@ -801,10 +804,8 @@ std::pair<Piece, int> Position::light_do_move(Move m) {
     idBoard[to]   = idBoard[from];
     idBoard[from] = 0;
 
-    if (captured)
-        // Update board and piece lists
-        remove_piece(to);
-
+    // Update board and piece lists
+    remove_piece(to);
     move_piece(from, to);
 
     sideToMove = ~sideToMove;
@@ -813,8 +814,8 @@ std::pair<Piece, int> Position::light_do_move(Move m) {
 }
 
 
-// Like undo_move(), but a little lighter
-void Position::light_undo_move(Move m, Piece captured, int id) {
+// A lighter version of undo_move(), used in chasing detection
+void Position::undo_move(Move m, Piece captured, int id) {
 
     sideToMove = ~sideToMove;
 
@@ -828,11 +829,7 @@ void Position::light_undo_move(Move m, Piece captured, int id) {
     move_piece(to, from);  // Put the piece back at the source square
 
     if (captured)
-    {
-        Square capsq = to;
-
-        put_piece(captured, capsq);  // Restore the captured piece
-    }
+        put_piece(captured, to);  // Restore the captured piece
 }
 
 
@@ -899,7 +896,7 @@ uint16_t Position::chased(Color c) {
                 else
                 {
                     bool trueChase             = true;
-                    const auto& [captured, id] = light_do_move(m);
+                    const auto& [captured, id] = do_move(m);
                     Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
                     while (recaptures)
                     {
@@ -910,7 +907,7 @@ uint16_t Position::chased(Color c) {
                             break;
                         }
                     }
-                    light_undo_move(m, captured, id);
+                    undo_move(m, captured, id);
 
                     if (trueChase)
                     {
@@ -959,13 +956,13 @@ Value Position::detect_chases(int d, int ply) {
         {
             if (!chase[sideToMove])
                 break;
-            light_undo_move(st->move, st->capturedPiece);
+            undo_move(st->move, st->capturedPiece);
             st = st->previous;
         }
         else
         {
             uint16_t after = chased(~sideToMove);
-            light_undo_move(st->move, st->capturedPiece);
+            undo_move(st->move, st->capturedPiece);
             st = st->previous;
             // Take the exact diff to detect the chase
             chase[sideToMove] &= after & ~chased(sideToMove);

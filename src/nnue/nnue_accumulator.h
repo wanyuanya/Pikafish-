@@ -37,10 +37,6 @@ class Position;
 
 namespace Stockfish::Eval::NNUE {
 
-using BiasType       = std::int16_t;
-using PSQTWeightType = std::int32_t;
-using IndexType      = std::uint32_t;
-
 template<IndexType Size>
 struct alignas(CacheLineSize) Accumulator;
 
@@ -112,7 +108,7 @@ struct AccumulatorCaches {
 
         std::array<Entry, COLOR_NB>& operator[](int index) { return entries[index]; }
 
-        std::array<std::array<Entry, COLOR_NB>, (9 + 6) * 2 * 3> entries;
+        std::array<std::array<Entry, COLOR_NB>, (9 + 6) * 4> entries;
     };
 
     template<typename Networks>

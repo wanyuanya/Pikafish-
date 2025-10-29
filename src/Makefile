@@ -86,10 +86,10 @@ VPATH = $(shell find . -type d | tr '\n' ':')
 # sse41 = yes/no      --- -msse4.1           --- Use Intel Streaming SIMD Extensions 4.1
 # avx2 = yes/no       --- -mavx2             --- Use Intel Advanced Vector Extensions 2
 # avxvnni = yes/no    --- -mavxvnni          --- Use Intel Vector Neural Network Instructions AVX
-# avx512f = yes/no    --- -mavx512f          --- Use Intel Advanced Vector Extensions 512 Foundation Only
-# avx512 = yes/no     --- -mavx512bw         --- Use Intel Advanced Vector Extensions 512
-# vnni256 = yes/no    --- -mavx256vnni       --- Use Intel Vector Neural Network Instructions 512 with 256bit operands
+# avx512 = yes/no     --- -mavx512f          --- Use Intel Advanced Vector Extensions 512
+# avx512bw = yes/no   --- -mavx512bw         --- Use Intel Byte and Word Instructions 512
 # vnni512 = yes/no    --- -mavx512vnni       --- Use Intel Vector Neural Network Instructions 512
+# avx512icl = yes/no  --- ... multiple ...   --- Use All AVX-512 features available on both Intel Ice Lake and AMD Zen 4
 # altivec = yes/no    --- -maltivec          --- Use PowerPC Altivec SIMD extension
 # vsx = yes/no        --- -mvsx              --- Use POWER VSX SIMD extension
 # neon = yes/no       --- -DUSE_NEON         --- Use ARM SIMD architecture
@@ -116,10 +116,10 @@ ifeq ($(ARCH), native)
 endif
 
 # explicitly check for the list of supported architectures (as listed with make help),
-# the user can override with `make ARCH=x86-32-vnni256 SUPPORTED_ARCH=true`
+# the user can override with `make ARCH=x86-64-avx512icl SUPPORTED_ARCH=true`
 ifeq ($(ARCH), $(filter $(ARCH), \
-                 x86-64-vnni512 x86-64-vnni256 x86-64-avx512 x86-64-avx512f x86-64-avxvnni x86-64-bmi2 \
-                 x86-64-avx2 x86-64-sse41-popcnt x86-64-modern x86-64-ssse3 x86-64-sse3-popcnt \
+                 x86-64-avx512icl x86-64-vnni512 x86-64-avx512bw x86-64-avx512 x86-64-avxvnni \
+                 x86-64-bmi2 x86-64-avx2 x86-64-sse41-popcnt x86-64-modern x86-64-ssse3 x86-64-sse3-popcnt \
                  x86-64 x86-32-sse41-popcnt x86-32-sse2 x86-32 ppc-64 ppc-64-altivec ppc-64-vsx ppc-32 e2k \
                  armv7 armv7-neon armv8 armv8-dotprod apple-silicon general-64 general-32 riscv64 \
                  loongarch64 loongarch64-lsx loongarch64-lasx))
@@ -142,10 +142,10 @@ ssse3 = no
 sse41 = no
 avx2 = no
 avxvnni = no
-avx512f = no
 avx512 = no
-vnni256 = no
+avx512bw = no
 vnni512 = no
+avx512icl = no
 altivec = no
 vsx = no
 neon = no
@@ -155,8 +155,8 @@ lsx = no
 lasx = no
 STRIP = strip
 
-ifneq ($(shell which clang-format-17 2> /dev/null),)
-	CLANG-FORMAT = clang-format-17
+ifneq ($(shell which clang-format-20 2> /dev/null),)
+	CLANG-FORMAT = clang-format-20
 else
 	CLANG-FORMAT = clang-format
 endif
@@ -248,7 +248,7 @@ ifeq ($(findstring -bmi2,$(ARCH)),-bmi2)
 	pext = yes
 endif
 
-ifeq ($(findstring -avx512f,$(ARCH)),-avx512f)
+ifeq ($(findstring -avx512,$(ARCH)),-avx512)
 	popcnt = yes
 	sse = yes
 	sse2 = yes
@@ -256,21 +256,10 @@ ifeq ($(findstring -avx512f,$(ARCH)),-avx512f)
 	sse41 = yes
 	avx2 = yes
 	pext = yes
-	avx512f = yes
-else
-	ifeq ($(findstring -avx512,$(ARCH)),-avx512)
-		popcnt = yes
-		sse = yes
-		sse2 = yes
-		ssse3 = yes
-		sse41 = yes
-		avx2 = yes
-		pext = yes
-		avx512 = yes
-	endif
+	avx512 = yes
 endif
 
-ifeq ($(findstring -vnni256,$(ARCH)),-vnni256)
+ifeq ($(findstring -avx512bw,$(ARCH)),-avx512bw)
 	popcnt = yes
 	sse = yes
 	sse2 = yes
@@ -278,7 +267,8 @@ ifeq ($(findstring -vnni256,$(ARCH)),-vnni256)
 	sse41 = yes
 	avx2 = yes
 	pext = yes
-	vnni256 = yes
+	avx512 = yes
+	avx512bw = yes
 endif
 
 ifeq ($(findstring -vnni512,$(ARCH)),-vnni512)
@@ -290,7 +280,22 @@ ifeq ($(findstring -vnni512,$(ARCH)),-vnni512)
 	avx2 = yes
 	pext = yes
 	avx512 = yes
+	avx512bw = yes
 	vnni512 = yes
+endif
+
+ifeq ($(findstring -avx512icl,$(ARCH)),-avx512icl)
+	popcnt = yes
+	sse = yes
+	sse2 = yes
+	ssse3 = yes
+	sse41 = yes
+	avx2 = yes
+	pext = yes
+	avx512 = yes
+	avx512bw = yes
+	vnni512 = yes
+	avx512icl = yes
 endif
 
 ifeq ($(sse),yes)
@@ -537,14 +542,12 @@ ifeq ($(KERNEL),Darwin)
 	XCRUN = xcrun
 endif
 
-# To cross-compile for Android, NDK version r21 or later is recommended.
-# In earlier NDK versions, you'll need to pass -fno-addrsig if using GNU binutils.
-# Currently we don't know how to make PGO builds with the NDK yet.
+# To cross-compile for Android, use NDK version r27c or later.
 ifeq ($(COMP),ndk)
-	CXXFLAGS += -stdlib=libc++ -fPIE
+	CXXFLAGS += -stdlib=libc++
 	comp=clang
 	ifeq ($(arch),armv7)
-		CXX=armv7a-linux-androideabi16-clang++
+		CXX=armv7a-linux-androideabi29-clang++
 		CXXFLAGS += -mthumb -march=armv7-a -mfloat-abi=softfp -mfpu=neon
 		ifneq ($(shell which arm-linux-androideabi-strip 2>/dev/null),)
 			STRIP=arm-linux-androideabi-strip
@@ -553,7 +556,7 @@ ifeq ($(COMP),ndk)
 		endif
 	endif
 	ifeq ($(arch),armv8)
-		CXX=aarch64-linux-android21-clang++
+		CXX=aarch64-linux-android29-clang++
 		ifneq ($(shell which aarch64-linux-android-strip 2>/dev/null),)
 			STRIP=aarch64-linux-android-strip
 		else
@@ -561,21 +564,30 @@ ifeq ($(COMP),ndk)
 		endif
 	endif
 	ifeq ($(arch),x86_64)
-		CXX=x86_64-linux-android21-clang++
+		CXX=x86_64-linux-android29-clang++
 		ifneq ($(shell which x86_64-linux-android-strip 2>/dev/null),)
 			STRIP=x86_64-linux-android-strip
 		else
 			STRIP=llvm-strip
 		endif
 	endif
-	LDFLAGS += -static-libstdc++ -pie -lm -latomic
+	LDFLAGS += -static-libstdc++
+endif
+
+### Allow overwriting CXX from command line
+ifdef COMPCXX
+	CXX=$(COMPCXX)
 endif
 
 # llvm-profdata must be version compatible with the specified CXX (be it clang, or the gcc alias)
 # make -j profile-build CXX=clang++-20 COMP=clang
 # Locate the version in the same directory as the compiler used,
 # with fallback to a generic one if it can't be located
-	LLVM_PROFDATA := $(dir $(realpath $(shell which $(CXX))))llvm-profdata
+	LLVM_PROFDATA := $(dir $(realpath $(shell which $(CXX) 2> /dev/null)))llvm-profdata
+# for icx
+ifeq ($(wildcard $(LLVM_PROFDATA)),)
+	LLVM_PROFDATA := $(dir $(realpath $(shell which $(CXX) 2> /dev/null)))/compiler/llvm-profdata
+endif
 ifeq ($(wildcard $(LLVM_PROFDATA)),)
 	LLVM_PROFDATA := llvm-profdata
 endif
@@ -592,11 +604,6 @@ else
 	ifeq ($(KERNEL),Darwin)
 		EXTRAPROFILEFLAGS = -fvisibility=hidden
 	endif
-endif
-
-### Allow overwriting CXX from command line
-ifdef COMPCXX
-	CXX=$(COMPCXX)
 endif
 
 ### Sometimes gcc is really clang
@@ -704,31 +711,31 @@ ifeq ($(avxvnni),yes)
 	endif
 endif
 
-ifeq ($(avx512f),yes)
-	CXXFLAGS += -DUSE_AVX512F
+ifeq ($(avx512),yes)
+	CXXFLAGS += -DUSE_AVX512
 	ifeq ($(comp),$(filter $(comp),gcc clang mingw icx))
 		CXXFLAGS += -mavx512f
 	endif
-else
-	ifeq ($(avx512),yes)
-		CXXFLAGS += -DUSE_AVX512
-		ifeq ($(comp),$(filter $(comp),gcc clang mingw icx))
-			CXXFLAGS += -mavx512f -mavx512bw
-		endif
-	endif
 endif
 
-ifeq ($(vnni256),yes)
-	CXXFLAGS += -DUSE_VNNI
+ifeq ($(avx512bw),yes)
+	CXXFLAGS += -DUSE_AVX512BW
 	ifeq ($(comp),$(filter $(comp),gcc clang mingw icx))
-		CXXFLAGS += -mavx512f -mavx512bw -mavx512vnni -mavx512dq -mavx512vl -mprefer-vector-width=256
+		CXXFLAGS += -mavx512bw
 	endif
 endif
 
 ifeq ($(vnni512),yes)
 	CXXFLAGS += -DUSE_VNNI
 	ifeq ($(comp),$(filter $(comp),gcc clang mingw icx))
-		CXXFLAGS += -mavx512f -mavx512bw -mavx512vnni -mavx512dq -mavx512vl -mprefer-vector-width=512
+		CXXFLAGS += -mavx512vnni -mavx512dq -mavx512vl
+	endif
+endif
+
+ifeq ($(avx512icl),yes)
+	CXXFLAGS += -DUSE_AVX512ICL
+	ifeq ($(comp),$(filter $(comp),gcc clang mingw icx))
+		CXXFLAGS += -mavx512cd -mavx512ifma -mavx512vbmi -mavx512vbmi2 -mavx512vpopcntdq -mavx512bitalg -mvpclmulqdq -mgfni -mvaes
 	endif
 endif
 
@@ -890,10 +897,10 @@ help:
 	echo "Supported archs:" && \
 	echo "" && \
 	echo "native                  > select the best architecture for the host processor (default)" && \
+	echo "x86-64-avx512icl        > x86 64-bit with minimum avx512 support of Intel Ice Lake or AMD Zen 4" && \
 	echo "x86-64-vnni512          > x86 64-bit with vnni 512bit support" && \
-	echo "x86-64-vnni256          > x86 64-bit with vnni 512bit support, limit operands to 256bit wide" && \
+	echo "x86-64-avx512bw         > x86 64-bit with avx512bw support" && \
 	echo "x86-64-avx512           > x86 64-bit with avx512 support" && \
-	echo "x86-64-avx512f          > x86 64-bit with avx512f only support" && \
 	echo "x86-64-avxvnni          > x86 64-bit with vnni 256bit support" && \
 	echo "x86-64-bmi2             > x86 64-bit with bmi2 support" && \
 	echo "x86-64-avx2             > x86 64-bit with avx2 support" && \
@@ -1011,9 +1018,6 @@ net:
 format:
 	$(CLANG-FORMAT) -i $(filter %.cpp,$(SRCS)) $(HEADERS) -style=file
 
-default:
-	help
-
 ### ==========================================================================
 ### Section 5. Private Targets
 ### ==========================================================================
@@ -1040,10 +1044,10 @@ config-sanity: net
 	echo "sse41: '$(sse41)'" && \
 	echo "avx2: '$(avx2)'" && \
 	echo "avxvnni: '$(avxvnni)'" && \
-	echo "avx512f: '$(avx512f)'" && \
 	echo "avx512: '$(avx512)'" && \
-	echo "vnni256: '$(vnni256)'" && \
+	echo "avx512bw: '$(avx512bw)'" && \
 	echo "vnni512: '$(vnni512)'" && \
+	echo "avx512icl: '$(avx512icl)'" && \
 	echo "altivec: '$(altivec)'" && \
 	echo "vsx: '$(vsx)'" && \
 	echo "neon: '$(neon)'" && \
@@ -1077,10 +1081,10 @@ config-sanity: net
 	(test "$(ssse3)" = "yes" || test "$(ssse3)" = "no") && \
 	(test "$(sse41)" = "yes" || test "$(sse41)" = "no") && \
 	(test "$(avx2)" = "yes" || test "$(avx2)" = "no") && \
-	(test "$(avx512f)" = "yes" || test "$(avx512f)" = "no") && \
 	(test "$(avx512)" = "yes" || test "$(avx512)" = "no") && \
-	(test "$(vnni256)" = "yes" || test "$(vnni256)" = "no") && \
+	(test "$(avx512bw)" = "yes" || test "$(avx512bw)" = "no") && \
 	(test "$(vnni512)" = "yes" || test "$(vnni512)" = "no") && \
+	(test "$(avx512icl)" = "yes" || test "$(avx512icl)" = "no") && \
 	(test "$(altivec)" = "yes" || test "$(altivec)" = "no") && \
 	(test "$(vsx)" = "yes" || test "$(vsx)" = "no") && \
 	(test "$(neon)" = "yes" || test "$(neon)" = "no") && \
@@ -1135,7 +1139,7 @@ icx-profile-make:
 	all
 
 icx-profile-use:
-	$(XCRUN) llvm-profdata merge -output=stockfish.profdata *.profraw
+	$(XCRUN) $(LLVM_PROFDATA) merge -output=stockfish.profdata *.profraw
 	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) \
 	EXTRACXXFLAGS='-fprofile-instr-use=stockfish.profdata' \
 	EXTRALDFLAGS='-fprofile-use ' \
@@ -1144,6 +1148,6 @@ icx-profile-use:
 .depend: $(SRCS)
 	-@$(CXX) $(DEPENDFLAGS) -MM $(SRCS) > $@ 2> /dev/null
 
-ifeq (, $(filter $(MAKECMDGOALS), help strip install clean net objclean profileclean config-sanity))
+ifeq (, $(filter $(MAKECMDGOALS), help strip install clean net objclean profileclean format config-sanity))
 -include .depend
 endif

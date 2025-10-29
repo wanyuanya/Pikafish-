@@ -22,27 +22,19 @@
 #include <cstdint>
 #include <initializer_list>
 #include <type_traits>
+#include <utility>
 
 #include "../bitboard.h"
 #include "../misc.h"
 #include "../position.h"
 #include "../types.h"
 #include "nnue_architecture.h"
-#include "nnue_feature_transformer.h"
+#include "nnue_feature_transformer.h"  // IWYU pragma: keep
+#include "simd.h"
 
 namespace Stockfish::Eval::NNUE {
 
-#if defined(__GNUC__) && !defined(__clang__)
-    #define sf_assume(cond) \
-        do \
-        { \
-            if (!(cond)) \
-                __builtin_unreachable(); \
-        } while (0)
-#else
-    // do nothing for other compilers
-    #define sf_assume(cond)
-#endif
+using namespace SIMD;
 
 namespace {
 
@@ -152,7 +144,7 @@ void AccumulatorStack::forward_update_incremental(
     auto [king_bucket, mirror] =
       FeatureSet::KingBuckets[ksq][oksq][FeatureSet::requires_mid_mirror(pos, Perspective)];
     auto attack_bucket = FeatureSet::make_attack_bucket(pos, Perspective);
-    auto bucket        = king_bucket * 6 + attack_bucket;
+    auto bucket        = king_bucket * 4 + attack_bucket;
 
     for (std::size_t next = begin + 1; next < size; next++)
     {
@@ -196,7 +188,7 @@ void AccumulatorStack::backward_update_incremental(
     auto [king_bucket, mirror] =
       FeatureSet::KingBuckets[ksq][oksq][FeatureSet::requires_mid_mirror(pos, Perspective)];
     auto attack_bucket = FeatureSet::make_attack_bucket(pos, Perspective);
-    auto bucket        = king_bucket * 6 + attack_bucket;
+    auto bucket        = king_bucket * 4 + attack_bucket;
 
     for (std::int64_t next = std::int64_t(size) - 2; next >= std::int64_t(end); next--)
         update_accumulator_incremental<Perspective, false>(
@@ -289,8 +281,7 @@ void double_inc_update(const FeatureTransformer<TransformedFeatureDimensions>& f
     FeatureSet::IndexList removed, added;
     FeatureSet::append_changed_indices<Perspective>(bucket, mirror, middle_state.dirtyPiece,
                                                     removed, added);
-    // you can't capture a piece that was just involved in castling since the rook ends up
-    // in a square that the king passed
+
     assert(added.size() < 2);
     FeatureSet::append_changed_indices<Perspective>(bucket, mirror, target_state.dirtyPiece,
                                                     removed, added);
@@ -390,14 +381,14 @@ void update_accumulator_refresh_cache(const FeatureTransformer<Dimensions>& feat
                                       AccumulatorState&                     accumulatorState,
                                       AccumulatorCaches::Cache<Dimensions>& cache) {
 
-    using Tiling [[maybe_unused]] = SIMDTiling<Dimensions, Dimensions>;
+    using Tiling [[maybe_unused]] = SIMDTiling<Dimensions, Dimensions, PSQTBuckets>;
 
     const Square ksq  = pos.king_square(Perspective);
     const Square oksq = pos.king_square(~Perspective);
     auto [king_bucket, mirror] =
       FeatureSet::KingBuckets[ksq][oksq][FeatureSet::requires_mid_mirror(pos, Perspective)];
     auto attack_bucket = FeatureSet::make_attack_bucket(pos, Perspective);
-    auto bucket        = king_bucket * 6 + attack_bucket;
+    auto bucket        = king_bucket * 4 + attack_bucket;
 
     auto cache_index = AccumulatorCaches::KingCacheMaps[ksq];
     if (cache_index < 3 && mirror)
@@ -407,7 +398,7 @@ void update_accumulator_refresh_cache(const FeatureTransformer<Dimensions>& feat
             cache_index += 3;
     }
 
-    auto&                 entry = cache[cache_index * 6 + attack_bucket][Perspective];
+    auto&                 entry = cache[cache_index * 4 + attack_bucket][Perspective];
     FeatureSet::IndexList removed, added;
 
     for (Color c : {WHITE, BLACK})

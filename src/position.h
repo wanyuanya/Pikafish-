@@ -19,8 +19,9 @@
 #ifndef POSITION_H_INCLUDED
 #define POSITION_H_INCLUDED
 
-#include <stdint.h>
+#include <array>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <iosfwd>
@@ -88,9 +89,9 @@ class Position {
     std::string fen() const;
 
     // Position representation
-    Bitboard pieces(PieceType pt = ALL_PIECES) const;
+    Bitboard pieces() const;  // All pieces
     template<typename... PieceTypes>
-    Bitboard pieces(PieceType pt, PieceTypes... pts) const;
+    Bitboard pieces(PieceTypes... pts) const;
     Bitboard pieces(Color c) const;
     template<typename... PieceTypes>
     Bitboard pieces(Color c, PieceTypes... pts) const;
@@ -169,12 +170,11 @@ class Position {
 
     // Other helpers
     void                  move_piece(Square from, Square to);
-    std::pair<Piece, int> light_do_move(Move m);
-    void                  light_undo_move(Move m, Piece captured, int id = 0);
+    std::pair<Piece, int> do_move(Move m);
+    void                  undo_move(Move m, Piece captured, int id = 0);
     Value                 detect_chases(int d, int ply = 0);
     bool                  chase_legal(Move m) const;
-    template<bool AfterMove>
-    Key adjust_key60(Key k) const;
+    Key                   adjust_key60(Key k) const;
 
     // Data members
     Piece      board[SQUARE_NB];
@@ -207,11 +207,11 @@ inline bool Position::empty(Square s) const { return piece_on(s) == NO_PIECE; }
 
 inline Piece Position::moved_piece(Move m) const { return piece_on(m.from_sq()); }
 
-inline Bitboard Position::pieces(PieceType pt) const { return byTypeBB[pt]; }
+inline Bitboard Position::pieces() const { return byTypeBB[ALL_PIECES]; }
 
 template<typename... PieceTypes>
-inline Bitboard Position::pieces(PieceType pt, PieceTypes... pts) const {
-    return pieces(pt) | pieces(pts...);
+inline Bitboard Position::pieces(PieceTypes... pts) const {
+    return (byTypeBB[pts] | ...);
 }
 
 inline Bitboard Position::pieces(Color c) const { return byColorBB[c]; }
@@ -262,11 +262,10 @@ inline Bitboard Position::pinners(Color c) const { return st->pinners[c]; }
 
 inline Bitboard Position::check_squares(PieceType pt) const { return st->checkSquares[pt]; }
 
-inline Key Position::key() const { return adjust_key60<false>(st->key); }
+inline Key Position::key() const { return adjust_key60(st->key); }
 
-template<bool AfterMove>
 inline Key Position::adjust_key60(Key k) const {
-    return (st->rule60 < 14 - AfterMove ? k : k ^ make_key((st->rule60 - (14 - AfterMove)) / 8))
+    return (st->rule60 < 14 ? k : k ^ make_key((st->rule60 - 14) / 8))
          ^ (filter[st->key] ? make_key(14) : 0);
 }
 

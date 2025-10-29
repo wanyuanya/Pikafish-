@@ -57,9 +57,15 @@
 // _WIN32                  Building on Windows (any)
 // _WIN64                  Building on Windows 64 bit
 
+// Enforce minimum GCC version
     #if defined(__GNUC__) && !defined(__clang__) \
       && (__GNUC__ < 9 || (__GNUC__ == 9 && __GNUC_MINOR__ < 3))
-        #error "Stockfish requires GCC 9.3 or later for correct compilation"
+        #error "Pikafish requires GCC 9.3 or later for correct compilation"
+    #endif
+
+    // Enforce minimum Clang version
+    #if defined(__clang__) && (__clang_major__ < 10)
+        #error "Pikafish requires Clang 10.0 or later for correct compilation"
     #endif
 
     #define ASSERT_ALIGNED(ptr, alignment) assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0)
@@ -181,11 +187,12 @@ enum Piece : std::int8_t {
     B_ROOK = ROOK + 8, B_ADVISOR, B_CANNON, B_PAWN, B_KNIGHT, B_BISHOP, B_KING,
     PIECE_NB
 };
-
-constexpr Value PieceValue[PIECE_NB] = {
-  VALUE_ZERO, RookValue,   AdvisorValue, CannonValue, PawnValue,  KnightValue, BishopValue,  VALUE_ZERO,
-  VALUE_ZERO, RookValue,   AdvisorValue, CannonValue, PawnValue,  KnightValue, BishopValue,  VALUE_ZERO};
 // clang-format on
+
+constexpr Value PieceValue[PIECE_NB] = {VALUE_ZERO, RookValue,   AdvisorValue, CannonValue,
+                                        PawnValue,  KnightValue, BishopValue,  VALUE_ZERO,
+                                        VALUE_ZERO, RookValue,   AdvisorValue, CannonValue,
+                                        PawnValue,  KnightValue, BishopValue,  VALUE_ZERO};
 
 using Depth = int;
 

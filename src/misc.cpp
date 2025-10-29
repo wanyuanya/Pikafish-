@@ -238,12 +238,16 @@ std::string compiler_info() {
 
     compiler += "\nCompilation settings       : ";
     compiler += (Is64Bit ? "64bit" : "32bit");
+#if defined(USE_AVX512ICL)
+    compiler += " AVX512ICL";
+#endif
 #if defined(USE_VNNI)
     compiler += " VNNI";
 #endif
-#if defined(USE_AVX512F)
-    compiler += " AVX512F";
-#elif defined(USE_AVX512)
+#if defined(USE_AVX512BW)
+    compiler += " AVX512BW";
+#endif
+#if defined(USE_AVX512)
     compiler += " AVX512";
 #endif
     compiler += (HasPext ? " BMI2" : "");
