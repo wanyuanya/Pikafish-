@@ -749,18 +749,12 @@ Value Search::Worker::search(
         Value result = VALUE_NONE;
         if (pos.rule_judge(result, ss->ply))
         {
-            // SkyRule: 根节点命中违规判负(±24999)时, 给所有rootMove赋分,
-            // 使UCI能输出判负分与合法bestmove(否则rootMoves尚未搜索, 默认显示0分)
-            if (rootNode && (result >= Value(24999) || result <= Value(-24999)))
-            {
-                for (RootMove& rm : rootMoves)
-                {
-                    rm.score = result;
-                    rm.averageScore = result;
-                    rm.uciScore = result;
-                }
-            }
-            return result == VALUE_DRAW ? value_draw(nodes) : result;
+            // SkyRule: 根节点命中违规判负(±24999)时, 不直接return判死, 让引擎真搜索每个rootMove:
+            // 继续走循环着法的子树会再命中rule_judge判±24999(负分),
+            // 走变招(打破循环)的子树正常评估. 引擎自动挑出变招, 变招有正常局面分.
+            // (双方都违规时, 率先达临界点者判负; 变招则脱离判罚)
+            if (!(rootNode && (result == Value(24999) || result == Value(-24999))))
+                return result == VALUE_DRAW ? value_draw(nodes) : result;
         }
         if (!rootNode && result != VALUE_NONE)
         {

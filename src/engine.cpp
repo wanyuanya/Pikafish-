@@ -106,7 +106,14 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add("nodestime", Option(0, 0, 10000));
 
-    options.add("UCI_ShowWDL", Option(false));
+    options.add("UCI_ShowWDL", Option(true));  // SkyRule: 默认开启胜率(WDL)输出
+
+    // SkyRule: 鲨鱼象棋 Elo 分制支持
+    options.add("Rule60MaxPly", Option(120, 0, 100000, [](const Option& o) -> std::optional<std::string> {
+        Position::set_rule60MaxPly(int(o));
+        return std::nullopt;
+    }));
+    options.add("ScoreType", Option("cp Elo", "cp"));
 
     options.add(  //
       "Rule", Option("AsianRule ChineseRule SkyRule ComputerRule", "SkyRule", [](const Option& o) {

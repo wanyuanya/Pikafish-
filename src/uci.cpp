@@ -85,7 +85,7 @@ void UCIEngine::init_search_update_listeners() {
     engine.set_on_iter([](const auto& i) { on_iter(i); });
     engine.set_on_update_no_moves([](const auto& i) { on_update_no_moves(i); });
     engine.set_on_update_full(
-      [this](const auto& i) { on_update_full(i, engine.get_options()["UCI_ShowWDL"]); });
+      [this](const auto& i) { on_update_full(i, engine.get_options()["UCI_ShowWDL"], engine.get_options()["ScoreType"]); });
     engine.set_on_start([]() {});
     engine.set_on_bestmove([](const auto& bm, const auto& p) { on_bestmove(bm, p); });
     engine.set_on_verify_network([](const auto& s) { print_info_string(s); });
@@ -253,7 +253,7 @@ void UCIEngine::bench(std::istream& args) {
 
     engine.set_on_update_full([&](const auto& i) {
         nodesSearched = i.nodes;
-        on_update_full(i, options["UCI_ShowWDL"]);
+        on_update_full(i, options["UCI_ShowWDL"], options["ScoreType"]);
     });
 
     std::vector<std::string> list = Benchmark::setup_bench(engine.fen(), args);
@@ -311,7 +311,7 @@ void UCIEngine::bench(std::istream& args) {
               << "\nNodes/second    : " << 1000 * nodes / elapsed << std::endl;
 
     // reset callback, to not capture a dangling reference to nodesSearched
-    engine.set_on_update_full([&](const auto& i) { on_update_full(i, options["UCI_ShowWDL"]); });
+    engine.set_on_update_full([&](const auto& i) { on_update_full(i, options["UCI_ShowWDL"], options["ScoreType"]); });
 }
 
 void UCIEngine::benchmark(std::istream& args) {
@@ -637,14 +637,37 @@ void UCIEngine::on_update_no_moves(const Engine::InfoShort& info) {
     sync_cout << "info depth " << info.depth << " score " << scoreStr << sync_endl;
 }
 
-void UCIEngine::on_update_full(const Engine::InfoFull& info, bool showWDL) {
+void UCIEngine::on_update_full(const Engine::InfoFull& info, bool showWDL, const std::string& scoreType) {
     std::stringstream ss;
+
+    std::string scoreStr = format_score(info.score);
+    // SkyRule: ScoreType=Elo 时, 从实时WDL期望得分反推Elo分(±24999杀棋/违例分与mate分不转)
+    // 用期望得分 E=(W+D/2)/1000 (胜1和0.5负0), 而非纯胜率W:
+    // 均势W=200 D=600 L=200 -> E=0.5 -> Elo=0; 纯W=0.2会错算成-240
+    if (scoreType == "Elo" && scoreStr.rfind("cp ", 0) == 0)
+    {
+        int cp = std::stoi(scoreStr.substr(3));
+        if (std::abs(cp) < 20000 && !info.wdl.empty())
+        {
+            std::string wdlStr(info.wdl);
+            int W = std::stoi(wdlStr.substr(0, wdlStr.find(' ')));
+            size_t p2 = wdlStr.find(' ', wdlStr.find(' ') + 1);
+            int D = std::stoi(wdlStr.substr(wdlStr.find(' ') + 1, p2 - wdlStr.find(' ') - 1));
+            double e = (W + D / 2.0) / 1000.0;   // 期望得分率
+            if (e < 0.001) e = 0.001;
+            if (e > 0.999) e = 0.999;
+            double elo = -400.0 * std::log10(1.0 / e - 1.0);
+            if (elo > 500) elo = 500;
+            if (elo < -500) elo = -500;
+            scoreStr = "cp " + std::to_string((int)std::lround(elo));
+        }
+    }
 
     ss << "info";
     ss << " depth " << info.depth                 //
        << " seldepth " << info.selDepth           //
        << " multipv " << info.multiPV             //
-       << " score " << format_score(info.score);  //
+       << " score " << scoreStr;                  //
 
     if (!info.bound.empty())
         ss << " " << info.bound;

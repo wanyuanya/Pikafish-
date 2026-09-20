@@ -176,6 +176,7 @@ class Position {
     // Rule setting (SkyRule / AsianRule / etc.)
     static void set_rule(Rule r) { currentRule = r; }
     static Rule get_rule() { return currentRule; }
+    static void set_rule60MaxPly(int n) { rule60MaxPly = n; }
 
     // SkyRule违规信息(用于UCI输出显示)
     static void        set_sky_rule_msg(const std::string& m) { skyRuleMsg = m; }
@@ -215,6 +216,7 @@ class Position {
     // Static rule setting
     static Rule        currentRule;
     static std::string skyRuleMsg;
+    static int         rule60MaxPly;   // SkyRule: 60回合不吃子判和阈值(默认120)
 
     // Data members
     std::array<Piece, SQUARE_NB>        board;

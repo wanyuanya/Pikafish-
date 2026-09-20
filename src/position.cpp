@@ -52,6 +52,7 @@ using namespace Attacks;
 // Default rule: SkyRule (天天象棋规则)
 Rule Position::currentRule = SKY_RULE;
 std::string Position::skyRuleMsg;
+int  Position::rule60MaxPly = 120;   // SkyRule: 60回合不吃子判和阈值
 
 namespace Zobrist {
 
@@ -1588,7 +1589,7 @@ bool Position::rule_judge(Value& result, int ply) {
     }
 
     // 60 move rule (120 plies without capture)
-    if (st->rule60 >= 120)
+    if (st->rule60 >= rule60MaxPly)
     {
         result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         return true;
