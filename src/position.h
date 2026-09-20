@@ -177,6 +177,10 @@ class Position {
     static void set_rule(Rule r) { currentRule = r; }
     static Rule get_rule() { return currentRule; }
 
+    // SkyRule违规信息(用于UCI输出显示)
+    static void        set_sky_rule_msg(const std::string& m) { skyRuleMsg = m; }
+    static std::string get_sky_rule_msg() { return skyRuleMsg; }
+
     // Position consistency check, for debugging
     bool                            pos_is_ok() const;
     std::optional<PositionSetError> flip();
@@ -204,7 +208,8 @@ class Position {
     Key adjust_key60(Key k) const;
 
     // Static rule setting
-    static Rule currentRule;
+    static Rule        currentRule;
+    static std::string skyRuleMsg;
 
     // Data members
     std::array<Piece, SQUARE_NB>        board;

@@ -50,6 +50,7 @@ using namespace Attacks;
 
 // Default rule: SkyRule (天天象棋规则)
 Rule Position::currentRule = SKY_RULE;
+std::string Position::skyRuleMsg;
 
 namespace Zobrist {
 
@@ -1354,9 +1355,14 @@ Value Position::detect_chases(int d, int ply) {
 bool Position::rule_judge(Value& result, int ply) {
 
     // Restore rule 60 by adding back the checks
-    int end = std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)
-                         + std::max(0, st->check10[BLACK] - 10),
-                       st->pliesFromNull);
+    // SkyRule: 禁用null move后pliesFromNull仍可能被搜索框架重置, 直接用rule60确保完整循环检测
+    int end = (currentRule == SKY_RULE)
+                ? st->rule60 + std::max(0, st->check10[WHITE] - 10) + std::max(0, st->check10[BLACK] - 10)
+                : std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)
+                             + std::max(0, st->check10[BLACK] - 10),
+                           st->pliesFromNull);
+
+    if (currentRule == SKY_RULE)
 
     if (end >= 4 && filter[st->key] >= 1)
     {
@@ -1364,6 +1370,8 @@ bool Position::rule_judge(Value& result, int ply) {
         StateInfo* stp       = st->previous->previous;
         bool       checkThem = st->checkersBB && stp->checkersBB;
         bool       checkUs   = st->previous->checkersBB && stp->previous->checkersBB;
+        if (currentRule == SKY_RULE && end >= 12)
+        if (currentRule == SKY_RULE)
 
         for (int i = 4; i <= end; i += 2)
         {
@@ -1387,10 +1395,14 @@ bool Position::rule_judge(Value& result, int ply) {
 
                             // Chasing detection
                             result = rollback.detect_chases(i, ply);
+                            if (result == Value(24999))
+                                Position::set_sky_rule_msg("对方长捉6次,违规判负");
+                            else if (result == Value(-24999))
+                                Position::set_sky_rule_msg("我方长捉6次,违规判负");
                         }
                         else
-                            // 未达6回合: 返回和棋近似值截断搜索(循环继续, 达到12步后由detect_chases判定)
-                            result = VALUE_DRAW;
+                            // 未达6回合: VALUE_NONE不截断搜索, 继续探索更长循环
+                            result = VALUE_NONE;
                     }
                     else
                     {
@@ -1530,72 +1542,90 @@ bool Position::rule_judge(Value& result, int ply) {
                         }
                         else if (themPureChase && usPureChase)
                         {
-                            // 双方互长捉: 6次判和; 未达阈值接受循环
-                            result = (themChaseSteps >= 6 && usChaseSteps >= 6) ? VALUE_DRAW : VALUE_DRAW;
+                            // 双方互长捉: 6次判和; 未达阈值VALUE_NONE继续搜索
+                            result = (themChaseSteps >= 6 && usChaseSteps >= 6) ? VALUE_DRAW : VALUE_NONE;
                         }
                         else if (themPureChase)
                         {
-                            // them方纯长捉: 6次判负(我方赢); 未达阈值我方受益, 轻微正分鼓励接受循环
-                            result = themChaseSteps >= 6 ? Value(24999) : VALUE_DRAW + 1;
+                            // them方纯长捉: 6次判负(我方赢); 未达阈值VALUE_NONE继续搜索
+                            result = themChaseSteps >= 6 ? Value(24999) : VALUE_NONE;
                         }
                         else if (usPureChase)
                         {
-                            // us方纯长捉: 6次判负(我方输); 未达阈值轻微负分鼓励变招
-                            result = usChaseSteps >= 6 ? Value(-24999) : VALUE_DRAW - 1;
+                            // us方纯长捉: 6次判负(我方输); 未达阈值VALUE_NONE继续搜索
+                            result = usChaseSteps >= 6 ? Value(-24999) : VALUE_NONE;
                         }
                         else if (themCheckOrChase && usCheckOrChase)
                         {
-                            // 双方将捉交替: 达到阈值判和; 未达阈值接受循环
+                            // 双方将捉交替: 达到阈值判和; 未达阈值VALUE_NONE继续搜索
                             int thrT = altThreshold(themCheckPieces + themChasePieces);
                             int thrU = altThreshold(usCheckPieces + usChasePieces);
                             result = ((themCheckSteps + themChaseSteps) >= thrT
                                       && (usCheckSteps + usChaseSteps) >= thrU)
                                        ? VALUE_DRAW
-                                       : VALUE_DRAW;
+                                       : VALUE_NONE;
                         }
                         else if (themCheckOrChase)
                         {
-                            // them方将捉交替: 达到阈值判负(我方赢); 未达阈值我方受益, 轻微正分鼓励接受循环
+                            // them方将捉交替: 达到阈值判负(我方赢); 未达阈值VALUE_NONE继续搜索
                             int thr = altThreshold(themCheckPieces + themChasePieces);
-                            result = (themCheckSteps + themChaseSteps) >= thr ? Value(24999) : VALUE_DRAW + 1;
+                            result = (themCheckSteps + themChaseSteps) >= thr ? Value(24999) : VALUE_NONE;
                         }
                         else if (usCheckOrChase)
                         {
-                            // us方将捉交替: 达到阈值判负(我方输); 未达阈值轻微负分鼓励变招
+                            // us方将捉交替: 达到阈值判负(我方输); 未达阈值VALUE_NONE继续搜索
                             int thr = altThreshold(usCheckPieces + usChasePieces);
-                            result = (usCheckSteps + usChaseSteps) >= thr ? Value(-24999) : VALUE_DRAW - 1;
+                            result = (usCheckSteps + usChaseSteps) >= thr ? Value(-24999) : VALUE_NONE;
                         }
                         else if (themChaseSteps > 0 && themCheckSteps == 0 && themIdleSteps == 0
                                  && usCheckSteps > 0 && usIdleSteps > 0)
                         {
-                            // them方全捉(含分捉), us方一将一闲 → them方变招
-                            result = themChaseSteps >= 6 ? Value(24999) : VALUE_DRAW + 1;
+                            // them方全捉(含分捉), us方一将一闲 → them方变招; 未达阈值VALUE_NONE
+                            result = themChaseSteps >= 6 ? Value(24999) : VALUE_NONE;
                         }
                         else if (usChaseSteps > 0 && usCheckSteps == 0 && usIdleSteps == 0
                                  && themCheckSteps > 0 && themIdleSteps > 0)
                         {
-                            // us方全捉(含分捉), them方一将一闲 → us方变招
-                            result = usChaseSteps >= 6 ? Value(-24999) : VALUE_DRAW - 1;
+                            // us方全捉(含分捉), them方一将一闲 → us方变招; 未达阈值VALUE_NONE
+                            result = usChaseSteps >= 6 ? Value(-24999) : VALUE_NONE;
                         }
                         else
                         {
                             // 一方有闲步: 允许循环(一将一闲等), 返回和棋近似值截断搜索
                             result = VALUE_DRAW;
                         }
+
+                        // SkyRule: 设置违规信息(用于UCI输出显示)
+                        if (result == Value(24999))
+                        {
+                            if (themAllCheck) Position::set_sky_rule_msg("对方长将" + std::to_string(themCheckSteps) + "次,违规判负");
+                            else if (themPureChase) Position::set_sky_rule_msg("对方长捉" + std::to_string(themChaseSteps) + "次,违规判负");
+                            else Position::set_sky_rule_msg("对方将捉交替" + std::to_string(themCheckSteps + themChaseSteps) + "次,违规判负");
+                        }
+                        else if (result == Value(-24999))
+                        {
+                            if (usAllCheck) Position::set_sky_rule_msg("我方长将" + std::to_string(usCheckSteps) + "次,违规判负");
+                            else if (usPureChase) Position::set_sky_rule_msg("我方长捉" + std::to_string(usChaseSteps) + "次,违规判负");
+                            else Position::set_sky_rule_msg("我方将捉交替" + std::to_string(usCheckSteps + usChaseSteps) + "次,违规判负");
+                        }
                     }
                     else
                         result = !checkUs ? Value(24999) : !checkThem ? Value(-24999) : VALUE_DRAW;
                 }
 
-                // 3 folds and 2 fold draws can be judged immediately.
-                // VALUE_NONE means "not yet reached the limit", so keep searching.
-                if (currentRule == SKY_RULE && result != VALUE_NONE && result != VALUE_DRAW)
-                if (result == VALUE_DRAW || (cnt == 2 && !(currentRule == SKY_RULE && result != VALUE_DRAW)))
+                // SkyRule: 只有判和(VALUE_DRAW)或判负(±24999)才返回true截断搜索
+                // VALUE_NONE(未达阈值)继续搜索找更长循环
+                if (currentRule == SKY_RULE)
+                {
+                    if (result == VALUE_DRAW || result == Value(24999) || result == Value(-24999))
+                        return true;
+                }
+                else if (result == VALUE_DRAW || cnt == 2)
                     return true;
 
                 // 2 fold mates need further investigations
-                // SkyRule: 未达阈值或判负时继续找更长循环(统计总将军/捉次数), 不提前return
-                if (filter[st->key] <= 1 && !(currentRule == SKY_RULE && result != VALUE_DRAW))
+                // SkyRule: 未达阈值(VALUE_NONE)或判和(VALUE_DRAW)时继续找更长循环, 判负(±24999)时不继续
+                if (filter[st->key] <= 1 && !(currentRule == SKY_RULE && (result == Value(24999) || result == Value(-24999))))
                 {
                     // Not exceeding rule 60 and have the same previous step
                     if (st->rule60 < 120 && st->previous->key == stp->previous->key)

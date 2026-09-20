@@ -939,7 +939,9 @@ Value Search::Worker::search(
     }
 
     // Step 10. Null move search with verification search
+    // SkyRule: 禁用null move pruning, 否则pliesFromNull被重置导致长捉循环检测不完整
     if (cutNode
+        && Position::get_rule() != SKY_RULE
         && ss->staticEval + 50 * ss->priorNMPFailHigh >= beta - 8 * depth - 51 * improving + 188
         && !excludedMove && pos.major_material(us) && ss->ply >= nmpMinPly && beta >= -2000)
     {

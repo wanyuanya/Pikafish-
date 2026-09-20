@@ -633,7 +633,10 @@ Move UCIEngine::to_move(const Position& pos, std::string str) {
 }
 
 void UCIEngine::on_update_no_moves(const Engine::InfoShort& info) {
-    sync_cout << "info depth " << info.depth << " score " << format_score(info.score) << sync_endl;
+    std::string scoreStr = format_score(info.score);
+    std::string msg = (scoreStr.find("24999") != std::string::npos)
+                      ? " (" + Position::get_sky_rule_msg() + ")" : "";
+    sync_cout << "info depth " << info.depth << " score " << scoreStr << msg << sync_endl;
 }
 
 void UCIEngine::on_update_full(const Engine::InfoFull& info, bool showWDL) {
@@ -657,6 +660,10 @@ void UCIEngine::on_update_full(const Engine::InfoFull& info, bool showWDL) {
        << " tbhits " << info.tbHits      //
        << " time " << info.timeMs        //
        << " pv " << info.pv;             //
+
+    // SkyRule: ±24999时附加违规信息
+    if (format_score(info.score).find("24999") != std::string::npos)
+        ss << " (" << Position::get_sky_rule_msg() << ")";
 
     sync_cout << ss.str() << sync_endl;
 }
