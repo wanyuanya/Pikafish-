@@ -1413,16 +1413,18 @@ bool Position::rule_judge(Value& result, int ply) {
                         Position rollback;
                         memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
 
+                        Color us = sideToMove, them = ~us;
+
                         u32 themCheckMask = 0, usCheckMask = 0;
                         u32 themChaseMask = 0, usChaseMask = 0;
                         int themCheckSteps = 0, usCheckSteps = 0;
                         int themChaseSteps = 0, usChaseSteps = 0;
                         int themIdleSteps = 0, usIdleSteps = 0;
                         bool themAllCheck = true, usAllCheck = true;
-                        // 交集法: 每步捉的子必须和所有步有交集, 否则是分捉不同子(允许)
-                        u16 themChaseIntersect = 0xFFFF, usChaseIntersect = 0xFFFF;
+                        // 官方detect_chases方法: chase[c]=c方被对方单方面捉的子的交集(按棋子id)
+                        u16 chase[COLOR_NB] = {0xFFFF, 0xFFFF};
                         // 位置交集(并行规则): 两个相同防守子交替补同一位置时, 按位置算长捉
-                        Bitboard themChasePosIntersect = ~Bitboard(0), usChasePosIntersect = ~Bitboard(0);
+                        Bitboard chasePos[COLOR_NB] = {~Bitboard(0), ~Bitboard(0)};
 
                         StateInfo* s = rollback.st;
                         for (int step = 0; step < i && s->previous; ++step)
@@ -1436,28 +1438,22 @@ bool Position::rule_judge(Value& result, int ply) {
 
                             if (!isCheck)
                             {
-                                // 走后局面mover的捉（差集法：走后 & ~走前 = 这步新增的捉）
+                                // 走后: mover方捉对方(~mover)哪些子
                                 u16 after = rollback.chased(mover);
                                 Bitboard afterPos = rollback.chased_positions(mover);
                                 rollback.undo_move(m, s->capturedPiece);
                                 s = s->previous;
                                 rollback.st = s;
-                                u16 before = rollback.chased(mover);
-                                Bitboard beforePos = rollback.chased_positions(mover);
-                                u16 newChases = after & ~before;
-                                Bitboard newChasePos = afterPos & ~beforePos;
-                                isChase = (newChases != 0);
-                                // 求交集: 分捉不同子则id交集归零; 并行规则看位置交集
-                                if (mover == ~sideToMove)
-                                {
-                                    themChaseIntersect &= newChases;
-                                    themChasePosIntersect &= newChasePos;
-                                }
-                                else
-                                {
-                                    usChaseIntersect &= newChases;
-                                    usChasePosIntersect &= newChasePos;
-                                }
+                                // 走前: ~mover方捉mover方哪些子(用于排除互捉)
+                                u16 counterChase = rollback.chased(~mover);
+                                Bitboard counterChasePos = rollback.chased_positions(~mover);
+                                // 单方面被捉: mover捉~mover, 但~mover没反捉mover
+                                u16 oneSided = after & ~counterChase;
+                                Bitboard oneSidedPos = afterPos & ~counterChasePos;
+                                isChase = (oneSided != 0);
+                                // ~mover方被mover方单方面捉的子求交集
+                                chase[~mover] &= oneSided;
+                                chasePos[~mover] &= oneSidedPos;
                             }
                             else
                             {
@@ -1501,9 +1497,9 @@ bool Position::rule_judge(Value& result, int ply) {
                             return pieces <= 1 ? 12 : 18;
                         };
 
-                        // 长捉判定: id交集(同一子)或位置交集(并行规则两子补同位)任一非0
-                        bool themHasChase = (themChaseIntersect != 0) || (themChasePosIntersect != 0);
-                        bool usHasChase   = (usChaseIntersect != 0)   || (usChasePosIntersect != 0);
+                        // 长捉判定: chase[c]=c方被对方单方面捉的子交集(id或位置任一非0)
+                        bool themHasChase = (chase[us] != 0)   || (chasePos[us] != 0);
+                        bool usHasChase   = (chase[them] != 0) || (chasePos[them] != 0);
                         bool themCheckOrChase = themAllCheck == false && themIdleSteps == 0 && themHasChase;
                         bool usCheckOrChase   = usAllCheck == false && usIdleSteps == 0 && usHasChase;
                         bool themPureCheck    = themAllCheck && themCheckSteps > 0;
