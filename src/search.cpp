@@ -753,6 +753,10 @@ Value Search::Worker::search(
         {
             assert(result != VALUE_DRAW);
 
+            // SkyRule: ±24999是确定的违规判负分，直接返回不截断
+            if (result >= Value(24999) || result <= Value(-24999))
+                return result;
+
             // 2 fold result is mate for us, the only chance for the opponent is to get a draw
             // We can guarantee to get at least a draw score during searching for that line
             if (result > VALUE_DRAW)
@@ -1618,6 +1622,10 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     if (result != VALUE_NONE)
     {
         assert(result != VALUE_DRAW);
+
+        // SkyRule: ±24999是确定的违规判负分，直接返回不截断
+        if (result >= Value(24999) || result <= Value(-24999))
+            return result;
 
         // 2 fold result is mate for us, the only chance for the opponent is to get a draw
         // We can guarantee to get at least a draw score during searching for that line

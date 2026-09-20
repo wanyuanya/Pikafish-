@@ -169,6 +169,7 @@ class Position {
     bool  rule_judge(Value& result, int ply = 0);
     int   rule60_count() const;
     u16   chased(Color c);
+    Bitboard chased_positions(Color c);  // SkyRule: 按位置返回被捉子集合(并行规则)
     Value major_material(Color c) const;
     Value major_material() const;
 

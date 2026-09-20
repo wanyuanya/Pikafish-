@@ -1236,6 +1236,78 @@ u16 Position::chased(Color c) {
     return chase;
 }
 
+// SkyRule: 和chased()逻辑相同，但按位置(Bitboard)返回被捉子集合
+// 用于并行规则：两个相同防守子交替补同一位置时，按位置算长捉
+Bitboard Position::chased_positions(Color c) {
+
+    Bitboard chase = 0;
+
+    std::swap(c, sideToMove);
+
+    Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
+    while (attackers)
+    {
+        Square    from         = pop_lsb(attackers);
+        PieceType attackerType = type_of(piece_on(from));
+        Bitboard  attacks      = attacks_bb(attackerType, from, pieces());
+
+        if (blockers_for_king(sideToMove) & from)
+            attacks &= pinners(~sideToMove) & ~pieces(KING);
+        else
+            attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
+                     | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
+
+        while (attacks)
+        {
+            Square to = pop_lsb(attacks);
+            Move   m  = Move(from, to);
+
+            if (chase_legal(m))
+            {
+                if ((attackerType == KNIGHT || attackerType == CANNON)
+                    && type_of(piece_on(to)) == ROOK)
+                    chase |= square_bb(to);
+                else if ((attackerType == ADVISOR || attackerType == BISHOP)
+                         && type_of(piece_on(to)) & 1)
+                    chase |= square_bb(to);
+                else
+                {
+                    bool trueChase             = true;
+                    const auto& [captured, id] = do_move(m);
+                    Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
+                    while (recaptures)
+                    {
+                        Square s = pop_lsb(recaptures);
+                        if (chase_legal(Move(s, to)))
+                        {
+                            trueChase = false;
+                            break;
+                        }
+                    }
+                    undo_move(m, captured, id);
+
+                    if (trueChase)
+                    {
+                        if (attackerType == type_of(piece_on(to)))
+                        {
+                            sideToMove = ~sideToMove;
+                            if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
+                                || !chase_legal(Move(to, from)))
+                                chase |= square_bb(to);
+                            sideToMove = ~sideToMove;
+                        }
+                        else
+                            chase |= square_bb(to);
+                    }
+                }
+            }
+        }
+    }
+
+    std::swap(c, sideToMove);
+
+    return chase;
+}
 
 // Detects chases from state st - d to state st
 Value Position::detect_chases(int d, int ply) {
@@ -1347,6 +1419,10 @@ bool Position::rule_judge(Value& result, int ply) {
                         int themChaseSteps = 0, usChaseSteps = 0;
                         int themIdleSteps = 0, usIdleSteps = 0;
                         bool themAllCheck = true, usAllCheck = true;
+                        // 交集法: 每步捉的子必须和所有步有交集, 否则是分捉不同子(允许)
+                        u16 themChaseIntersect = 0xFFFF, usChaseIntersect = 0xFFFF;
+                        // 位置交集(并行规则): 两个相同防守子交替补同一位置时, 按位置算长捉
+                        Bitboard themChasePosIntersect = ~Bitboard(0), usChasePosIntersect = ~Bitboard(0);
 
                         StateInfo* s = rollback.st;
                         for (int step = 0; step < i && s->previous; ++step)
@@ -1362,11 +1438,26 @@ bool Position::rule_judge(Value& result, int ply) {
                             {
                                 // 走后局面mover的捉（差集法：走后 & ~走前 = 这步新增的捉）
                                 u16 after = rollback.chased(mover);
+                                Bitboard afterPos = rollback.chased_positions(mover);
                                 rollback.undo_move(m, s->capturedPiece);
                                 s = s->previous;
                                 rollback.st = s;
                                 u16 before = rollback.chased(mover);
-                                isChase = (after & ~before) != 0;
+                                Bitboard beforePos = rollback.chased_positions(mover);
+                                u16 newChases = after & ~before;
+                                Bitboard newChasePos = afterPos & ~beforePos;
+                                isChase = (newChases != 0);
+                                // 求交集: 分捉不同子则id交集归零; 并行规则看位置交集
+                                if (mover == ~sideToMove)
+                                {
+                                    themChaseIntersect &= newChases;
+                                    themChasePosIntersect &= newChasePos;
+                                }
+                                else
+                                {
+                                    usChaseIntersect &= newChases;
+                                    usChasePosIntersect &= newChasePos;
+                                }
                             }
                             else
                             {
@@ -1410,12 +1501,15 @@ bool Position::rule_judge(Value& result, int ply) {
                             return pieces <= 1 ? 12 : 18;
                         };
 
-                        bool themCheckOrChase = themAllCheck == false && themIdleSteps == 0;
-                        bool usCheckOrChase   = usAllCheck == false && usIdleSteps == 0;
+                        // 长捉判定: id交集(同一子)或位置交集(并行规则两子补同位)任一非0
+                        bool themHasChase = (themChaseIntersect != 0) || (themChasePosIntersect != 0);
+                        bool usHasChase   = (usChaseIntersect != 0)   || (usChasePosIntersect != 0);
+                        bool themCheckOrChase = themAllCheck == false && themIdleSteps == 0 && themHasChase;
+                        bool usCheckOrChase   = usAllCheck == false && usIdleSteps == 0 && usHasChase;
                         bool themPureCheck    = themAllCheck && themCheckSteps > 0;
                         bool usPureCheck      = usAllCheck && usCheckSteps > 0;
-                        bool themPureChase    = themCheckSteps == 0 && themIdleSteps == 0 && themChaseSteps > 0;
-                        bool usPureChase      = usCheckSteps == 0 && usIdleSteps == 0 && usChaseSteps > 0;
+                        bool themPureChase    = themCheckSteps == 0 && themIdleSteps == 0 && themChaseSteps > 0 && themHasChase;
+                        bool usPureChase      = usCheckSteps == 0 && usIdleSteps == 0 && usChaseSteps > 0 && usHasChase;
 
                         if (themPureCheck && usPureCheck)
                         {
@@ -1474,6 +1568,18 @@ bool Position::rule_judge(Value& result, int ply) {
                             // us方将捉交替: 达到阈值判负(我方输); 未达阈值轻微负分鼓励变招
                             int thr = altThreshold(usCheckPieces + usChasePieces);
                             result = (usCheckSteps + usChaseSteps) >= thr ? Value(-24999) : VALUE_DRAW - 1;
+                        }
+                        else if (themChaseSteps > 0 && themCheckSteps == 0 && themIdleSteps == 0
+                                 && usCheckSteps > 0 && usIdleSteps > 0)
+                        {
+                            // them方全捉(含分捉), us方一将一闲 → them方变招
+                            result = themChaseSteps >= 6 ? Value(24999) : VALUE_DRAW + 1;
+                        }
+                        else if (usChaseSteps > 0 && usCheckSteps == 0 && usIdleSteps == 0
+                                 && themCheckSteps > 0 && themIdleSteps > 0)
+                        {
+                            // us方全捉(含分捉), them方一将一闲 → us方变招
+                            result = usChaseSteps >= 6 ? Value(-24999) : VALUE_DRAW - 1;
                         }
                         else
                         {
