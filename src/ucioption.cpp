@@ -192,8 +192,17 @@ std::ostream& operator<<(std::ostream& os, const OptionsMap& om) {
                 const Option& o = it.second;
                 os << "\noption name " << it.first << " type " << o.type;
 
-                if (o.type == "check" || o.type == "combo")
+                if (o.type == "check")
                     os << " default " << o.defaultValue;
+
+                else if (o.type == "combo")
+                {
+                    os << " default " << o.currentValue;
+                    std::string token;
+                    std::istringstream ss(o.defaultValue);
+                    while (ss >> token)
+                        os << " var " << token;
+                }
 
                 else if (o.type == "string")
                 {
