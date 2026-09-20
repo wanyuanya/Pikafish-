@@ -683,11 +683,7 @@ void UCIEngine::on_update_full(const Engine::InfoFull& info, bool showWDL, const
        << " pv " << info.pv;             //
 
     sync_cout << ss.str() << sync_endl;
-
-    // SkyRule: ±24999违规信息用独立 info string 行输出, 绝不追加到 pv 后
-    // (否则GUI把中文当非法着法token解析失败, 报 error)
-    if (format_score(info.score).find("24999") != std::string::npos)
-        sync_cout << "info string " << Position::get_sky_rule_msg() << sync_endl;
+    // SkyRule: 违规原因中文名(info string)鲨鱼不显示且可能干扰, 已移除. 鲨鱼注释列由GUI自己推导.
 }
 
 void UCIEngine::on_iter(const Engine::InfoIter& info) {
