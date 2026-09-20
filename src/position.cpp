@@ -1372,7 +1372,7 @@ bool Position::rule_judge(Value& result, int ply) {
 
             // Return a score if a position repeats once earlier but strictly
             // after the root, or repeats twice before or at the root.
-            if (stp->key == st->key && (++cnt == 2 || ply > i))
+            if (stp->key == st->key && (++cnt == 2 || ply > i || currentRule == SKY_RULE))
             {
                 if (!checkThem && !checkUs)
                 {
@@ -1589,11 +1589,13 @@ bool Position::rule_judge(Value& result, int ply) {
 
                 // 3 folds and 2 fold draws can be judged immediately.
                 // VALUE_NONE means "not yet reached the limit", so keep searching.
-                if (result == VALUE_DRAW || cnt == 2)
+                if (currentRule == SKY_RULE && result != VALUE_NONE && result != VALUE_DRAW)
+                if (result == VALUE_DRAW || (cnt == 2 && !(currentRule == SKY_RULE && result != VALUE_DRAW)))
                     return true;
 
                 // 2 fold mates need further investigations
-                if (filter[st->key] <= 1)
+                // SkyRule: 未达阈值或判负时继续找更长循环(统计总将军/捉次数), 不提前return
+                if (filter[st->key] <= 1 && !(currentRule == SKY_RULE && result != VALUE_DRAW))
                 {
                     // Not exceeding rule 60 and have the same previous step
                     if (st->rule60 < 120 && st->previous->key == stp->previous->key)
