@@ -1448,7 +1448,7 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
     auto hitMix     = [&](Color c){ return agg[c].idle == 0 && agg[c].ck > 0 && agg[c].ch > 0; };
     auto longChase  = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect != 0; };
     auto splitChase = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect == 0; };
-    auto level      = [&](Color c){ return longCheck(c) ? 3 : longChase(c) ? 2 : 0; };
+    auto level      = [&](Color c){ return longCheck(c) ? 3 : longChase(c) ? 2 : hitMix(c) ? 1 : 0; };
     auto reasonFor  = [&](Color c)->const char* {
         if (longCheck(c)) return "长将";
         if (longChase(c)) return "长捉";
@@ -1534,8 +1534,8 @@ bool Position::rule_judge(Value& result, int ply) {
             {
                 if (currentRule == SKY_RULE)
                 {
-                    // SkyRule(天天象棋): 循环里有将军(连将杀/反击将军)时, 与原生规则一致判杀棋分(mate_in/mated_in),
-                    // 让引擎继续搜到真正的杀棋, 不误判成长将负. 只有双方都不将军的循环才走sky_judge_loop判长捉.
+                    // SkyRule(天天象棋): 循环里有将军(连将杀/反击将)时走mate分支判杀棋分,
+                    // 避免把连将杀偶然重复误判成长将负. 无将军的纯长捉循环走sky_judge_loop.
                     if (checkThem || checkUs)
                         result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
                     else
