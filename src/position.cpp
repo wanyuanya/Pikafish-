@@ -1272,7 +1272,7 @@ Value Position::detect_chases(int d, int ply) {
         }
     }
 
-    return bool(chase[us]) ^ bool(chase[them]) ? chase[us] ? mated_in(ply) : mate_in(ply)
+    return bool(chase[us]) ^ bool(chase[them]) ? chase[us] ? Value(-24999) : Value(24999)
                                                : VALUE_DRAW;
 }
 
@@ -1430,13 +1430,13 @@ bool Position::rule_judge(Value& result, int ply) {
                         {
                             // them方纯长将: 达到阈值判负(我方赢); 未达阈值时我方受益, 轻微正分鼓励接受循环
                             int thr = checkThreshold(themCheckPieces);
-                            result = themCheckSteps >= thr ? mate_in(ply) : VALUE_DRAW + 1;
+                            result = themCheckSteps >= thr ? Value(24999) : VALUE_DRAW + 1;
                         }
                         else if (usPureCheck)
                         {
                             // us方纯长将: 达到阈值判负(我方输); 未达阈值返回轻微负分鼓励变招
                             int thr = checkThreshold(usCheckPieces);
-                            result = usCheckSteps >= thr ? mated_in(ply) : VALUE_DRAW - 1;
+                            result = usCheckSteps >= thr ? Value(-24999) : VALUE_DRAW - 1;
                         }
                         else if (themPureChase && usPureChase)
                         {
@@ -1446,12 +1446,12 @@ bool Position::rule_judge(Value& result, int ply) {
                         else if (themPureChase)
                         {
                             // them方纯长捉: 6次判负(我方赢); 未达阈值我方受益, 轻微正分鼓励接受循环
-                            result = themChaseSteps >= 6 ? mate_in(ply) : VALUE_DRAW + 1;
+                            result = themChaseSteps >= 6 ? Value(24999) : VALUE_DRAW + 1;
                         }
                         else if (usPureChase)
                         {
                             // us方纯长捉: 6次判负(我方输); 未达阈值轻微负分鼓励变招
-                            result = usChaseSteps >= 6 ? mated_in(ply) : VALUE_DRAW - 1;
+                            result = usChaseSteps >= 6 ? Value(-24999) : VALUE_DRAW - 1;
                         }
                         else if (themCheckOrChase && usCheckOrChase)
                         {
@@ -1467,13 +1467,13 @@ bool Position::rule_judge(Value& result, int ply) {
                         {
                             // them方将捉交替: 达到阈值判负(我方赢); 未达阈值我方受益, 轻微正分鼓励接受循环
                             int thr = altThreshold(themCheckPieces + themChasePieces);
-                            result = (themCheckSteps + themChaseSteps) >= thr ? mate_in(ply) : VALUE_DRAW + 1;
+                            result = (themCheckSteps + themChaseSteps) >= thr ? Value(24999) : VALUE_DRAW + 1;
                         }
                         else if (usCheckOrChase)
                         {
                             // us方将捉交替: 达到阈值判负(我方输); 未达阈值轻微负分鼓励变招
                             int thr = altThreshold(usCheckPieces + usChasePieces);
-                            result = (usCheckSteps + usChaseSteps) >= thr ? mated_in(ply) : VALUE_DRAW - 1;
+                            result = (usCheckSteps + usChaseSteps) >= thr ? Value(-24999) : VALUE_DRAW - 1;
                         }
                         else
                         {
@@ -1482,7 +1482,7 @@ bool Position::rule_judge(Value& result, int ply) {
                         }
                     }
                     else
-                        result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
+                        result = !checkUs ? Value(24999) : !checkThem ? Value(-24999) : VALUE_DRAW;
                 }
 
                 // 3 folds and 2 fold draws can be judged immediately.
