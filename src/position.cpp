@@ -1456,16 +1456,6 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
         return "违规着法";
     };
 
-#ifdef SKY_DEBUG  // SKY_DEBUG_ON
-    fprintf(stderr, "SKY loop=%d us=%d | us(ck%d ch%d idle%d inter%x) them(ck%d ch%d idle%d inter%x)\n",
-            loopLen, (int)us,
-            agg[us].ck, agg[us].ch, agg[us].idle, agg[us].intersect,
-            agg[them].ck, agg[them].ch, agg[them].idle, agg[them].intersect);
-    for (size_t i=0;i<steps.size();++i)
-        fprintf(stderr,"  step%zu mover=%d %s newIds=%x\n", i, (int)steps[i].mover,
-                steps[i].isCheck?"将":(steps[i].newIds?"捉":"闲"), steps[i].newIds);
-#endif
-
     Value result = VALUE_DRAW;
     Color loser = COLOR_NB;
     const char* reason = nullptr;
@@ -1543,8 +1533,12 @@ bool Position::rule_judge(Value& result, int ply) {
             {
                 if (currentRule == SKY_RULE)
                 {
-                    // SkyRule(天天象棋): 带棋子身份追踪的逐着打/闲判定
-                    result = sky_judge_loop(i, ply);
+                    // SkyRule(天天象棋): 循环里有将军(连将杀/反击将军)时, 与原生规则一致判杀棋分(mate_in/mated_in),
+                    // 让引擎继续搜到真正的杀棋, 不误判成长将负. 只有双方都不将军的循环才走sky_judge_loop判长捉.
+                    if (checkThem || checkUs)
+                        result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
+                    else
+                        result = sky_judge_loop(i, ply);
                 }
                 else if (!checkThem && !checkUs)
                 {
