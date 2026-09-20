@@ -641,27 +641,8 @@ void UCIEngine::on_update_full(const Engine::InfoFull& info, bool showWDL, const
     std::stringstream ss;
 
     std::string scoreStr = format_score(info.score);
-    // SkyRule: ScoreType=Elo 时, 从实时WDL期望得分反推Elo分(±24999杀棋/违例分与mate分不转)
-    // 用期望得分 E=(W+D/2)/1000 (胜1和0.5负0), 而非纯胜率W:
-    // 均势W=200 D=600 L=200 -> E=0.5 -> Elo=0; 纯W=0.2会错算成-240
-    if (scoreType == "Elo" && scoreStr.rfind("cp ", 0) == 0)
-    {
-        int cp = std::stoi(scoreStr.substr(3));
-        if (std::abs(cp) < 20000 && !info.wdl.empty())
-        {
-            std::string wdlStr(info.wdl);
-            int W = std::stoi(wdlStr.substr(0, wdlStr.find(' ')));
-            size_t p2 = wdlStr.find(' ', wdlStr.find(' ') + 1);
-            int D = std::stoi(wdlStr.substr(wdlStr.find(' ') + 1, p2 - wdlStr.find(' ') - 1));
-            double e = (W + D / 2.0) / 1000.0;   // 期望得分率
-            if (e < 0.001) e = 0.001;
-            if (e > 0.999) e = 0.999;
-            double elo = -400.0 * std::log10(1.0 / e - 1.0);
-            if (elo > 500) elo = 500;
-            if (elo < -500) elo = -500;
-            scoreStr = "cp " + std::to_string((int)std::lround(elo));
-        }
-    }
+    // SkyRule: 不在引擎内转Elo. Stockfish/Pikafish输出原始cp, 鲨鱼ScoreType=Elo时GUI自己用WDL转.
+    // 引擎内转会导致双重转换和钳位失真(必胜局面WDL1000|0|0被钳到±500, 官方出-4319).
 
     ss << "info";
     ss << " depth " << info.depth                 //
