@@ -1368,8 +1368,9 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
         int ck = 0, ch = 0, idle = 0;
         uint32_t intersect = 0xFFFFFFFFu;  // 各捉步新捉身份的交集
         uint32_t uni = 0;                  // 并集
+        uint32_t checkPiece = 0xFFFFFFFFu; // 将步将军子身份交集(单子将捉)
     };
-    struct SI { Color mover; bool isCheck; uint32_t newIds; };
+    struct SI { Color mover; bool isCheck; uint32_t newIds; uint32_t checkId; };
 
     Position rollback;
     memcpy((void*)&rollback, (const void*)this, offsetof(Position, filter));
@@ -1426,7 +1427,7 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
                     bbstr(afterBB).c_str(), bbstr(beforeBB).c_str());
         }
 #endif
-        steps.push_back({mover, isCheck, newIds});
+        steps.push_back({mover, isCheck, newIds, isCheck ? (uint32_t)(1u << posId[fromSq]) : 0u});
     }
     std::reverse(steps.begin(), steps.end());   // 转为时间顺序
 
@@ -1436,17 +1437,19 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
     {
         Agg& g = agg[s.mover];
         if (s.isCheck)
-            g.ck++;                          // 将军步只计将(将军附带的捉不计)
+        {
+            g.ck++;
+            g.checkPiece &= s.checkId;   // 将军子身份交集
+        }
         else if (s.newIds)
         { g.ch++; g.intersect &= s.newIds; g.uni |= s.newIds; }
         else
             g.idle++;
     }
 
-    // 天天违规等级: 长将=3, 长捉同一子=2, 其他=0 (将捉交替/分捉/一将一闲走特例)
-    auto longCheck  = [&](Color c){ return agg[c].ck == half; };
-    auto hitMix     = [&](Color c){ return agg[c].idle == 0 && agg[c].ck > 0 && agg[c].ch > 0; };
-    auto longChase  = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect != 0; };
+    auto longCheck   = [&](Color c){ return agg[c].ck == half; };
+    auto hitMix      = [&](Color c){ return agg[c].idle == 0 && agg[c].ck > 0 && agg[c].ch > 0; };
+    auto longChase   = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect != 0; };
     auto splitChase = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect == 0; };
     auto level      = [&](Color c){ return longCheck(c) ? 3 : longChase(c) ? 2 : hitMix(c) ? 1 : 0; };
     auto reasonFor  = [&](Color c)->const char* {
