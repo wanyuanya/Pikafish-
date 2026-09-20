@@ -181,6 +181,9 @@ class Position {
     static void        set_sky_rule_msg(const std::string& m) { skyRuleMsg = m; }
     static std::string get_sky_rule_msg() { return skyRuleMsg; }
 
+    // SkyRule调试: 获取当前局面在filter中的重复次数
+    int debug_filter() const { return filter[st->key]; }
+
     // Position consistency check, for debugging
     bool                            pos_is_ok() const;
     std::optional<PositionSetError> flip();
@@ -203,6 +206,8 @@ class Position {
     std::pair<Piece, int> do_move(Move m);
     void                  undo_move(Move m, Piece captured, int id = 0);
     Value                 detect_chases(int d, int ply = 0);
+    // SkyRule(天天象棋规则): 带棋子身份追踪的逐着打/闲循环判定
+    Value                 sky_judge_loop(int loopLen, int ply = 0);
     bool                  chase_legal(Move m) const;
     template<bool AfterMove = false>
     Key adjust_key60(Key k) const;

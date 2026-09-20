@@ -743,13 +743,26 @@ Value Search::Worker::search(
     if (PvNode && selDepth < ss->ply + 1)
         selDepth = ss->ply + 1;
 
-    if (!rootNode)
+    // Step 2. Check for aborted search or repetition
+    // SkyRule: 根节点也调用rule_judge, 检测棋谱历史中的循环(长将/长捉2-fold判负)
     {
-        // Step 2. Check for aborted search or repetition
         Value result = VALUE_NONE;
         if (pos.rule_judge(result, ss->ply))
+        {
+            // SkyRule: 根节点命中违规判负(±24999)时, 给所有rootMove赋分,
+            // 使UCI能输出判负分与合法bestmove(否则rootMoves尚未搜索, 默认显示0分)
+            if (rootNode && (result >= Value(24999) || result <= Value(-24999)))
+            {
+                for (RootMove& rm : rootMoves)
+                {
+                    rm.score = result;
+                    rm.averageScore = result;
+                    rm.uciScore = result;
+                }
+            }
             return result == VALUE_DRAW ? value_draw(nodes) : result;
-        if (result != VALUE_NONE)
+        }
+        if (!rootNode && result != VALUE_NONE)
         {
             assert(result != VALUE_DRAW);
 
