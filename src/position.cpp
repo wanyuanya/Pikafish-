@@ -1451,7 +1451,7 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
     auto hitMix      = [&](Color c){ return agg[c].idle == 0 && agg[c].ck > 0 && agg[c].ch > 0; };
     auto longChase   = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect != 0; };
     auto splitChase = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect == 0; };
-    auto level      = [&](Color c){ return longCheck(c) ? 3 : longChase(c) ? 2 : hitMix(c) ? 1 : 0; };
+    auto level      = [&](Color c){ return longCheck(c) ? 3 : hitMix(c) ? 2 : longChase(c) ? 1 : 0; };
     auto reasonFor  = [&](Color c)->const char* {
         if (longCheck(c)) return "长将";
         if (longChase(c)) return "长捉";
