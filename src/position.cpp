@@ -1372,7 +1372,7 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
         uint32_t uni = 0;
         uint32_t checkPiece = 0xFFFFFFFFu;
     };
-    struct SI { Color mover; bool isCheck; uint32_t newIds; uint32_t checkId; bool moverKing; };
+    struct SI { Color mover; bool isCheck; uint32_t newIds; uint32_t afterIds; uint32_t checkId; bool moverKing; bool moverRook; };
 
     Position rollback;
     memcpy((void*)&rollback, (const void*)this, offsetof(Position, filter));
@@ -1425,6 +1425,7 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
         int mid = posId[toSq];
         Piece captured = cur->capturedPiece;
         bool moverKing = type_of(rollback.piece_on(toSq)) == KING;  // undo前取走子类型
+        bool moverRook = type_of(rollback.piece_on(toSq)) == ROOK;  // 车捉车互捉允许, 马炮捉车禁止
         rollback.undo_move(m, captured);   // 轻量回退到走前
         rollback.st = cur->previous;       // StateInfo 沿链回退
         // 身份映射同步回退(重复循环内不吃子)
@@ -1435,24 +1436,37 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
         u16 beforeIds = rollback.chased(mover);
         u16 newIds = afterIds & ~beforeIds;  // 这步新产生的捉
 
-        steps.push_back({mover, isCheck, newIds, isCheck ? (uint32_t)(1u << posId[fromSq]) : 0u, moverKing});
+        steps.push_back({mover, isCheck, (uint32_t)newIds, (uint32_t)afterIds, isCheck ? (uint32_t)(1u << posId[fromSq]) : 0u, moverKing, moverRook});
     }
     std::reverse(steps.begin(), steps.end());   // 转为时间顺序
 
     Agg agg[COLOR_NB];
     int half = loopLen / 2;
+    // 第一遍: 先收集每方将军步走后捉的目标(跨步一将一捉识别需要)
+    uint32_t checkTarget[COLOR_NB] = {0, 0};
+    for (const SI& s : steps)
+        if (s.isCheck) checkTarget[s.mover] |= s.afterIds;
     for (const SI& s : steps)
     {
         Agg& g = agg[s.mover];
         uint32_t strongBits = s.newIds & strongMask[~s.mover];
+        // 跨步一将一捉: 闲步虽无新捉, 但走后仍捉着将军步那个目标
+        uint32_t persistIds = (!s.isCheck && s.afterIds & checkTarget[s.mover])
+                              ? (s.afterIds & checkTarget[s.mover]) : 0u;
         if (s.isCheck)
         {
-            // 天天规则: 将捉同时出现优先算将, 将军步不算捉
+            // 天天规则: 将捉同时出现优先算将, 将军步不单独计ch
             g.ck++;
             g.checkPiece &= s.checkId;
         }
         else if (s.newIds)
         { g.ch++; g.intersect &= s.newIds; g.uni |= s.newIds; if (s.moverKing) g.kingChase++; if (strongBits) g.hasStrong = true; }
+        else if (persistIds && !(s.moverRook && (persistIds & strongMask[~s.mover])))
+        {
+            // 借将掩护持续捉同一子 = 一将一捉
+            // 车捉车(走子是车且捉的是强子)互捉允许; 马炮捉车/捉弱子禁止
+            g.ch++; g.intersect &= persistIds; g.uni |= persistIds;
+        }
         else
             g.idle++;
     }
@@ -1553,7 +1567,8 @@ int skyMoveCheckW = 0, skyMoveCheckB = 0;
 bool Position::rule_judge(Value& result, int ply) {
 
     // SkyRule: 用全局变量检测连将, 不遍历搜索sp链
-    if (currentRule == SKY_RULE && ply == 0)
+    // 不限制ply==0: 根节点不截断后搜索会展开, 内部节点也需要判连将
+    if (currentRule == SKY_RULE)
     {
         if (skyMoveCheckW >= 6 && skyMoveCheckW <= 12)
         {

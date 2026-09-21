@@ -748,36 +748,22 @@ Value Search::Worker::search(
     {
         Value result = VALUE_NONE;
         bool rjRet = pos.rule_judge(result, ss->ply);
-        if (rjRet)
+        if (rjRet && !rootNode)
         {
-            if (rootNode && (result == Value(24999) || result == Value(-24999)))
-            {
-                // 根节点直接判负时rootMoves尚未搜索, 手动赋分使UCI输出±24999
-                for (RootMove& rm : rootMoves)
-                {
-                    rm.score = result;
-                    rm.averageScore = result;
-                    rm.uciScore = result;
-                }
-            }
-            return result == VALUE_DRAW ? value_draw(nodes) : result;
+            if (result == VALUE_DRAW)
+                return value_draw(nodes);
+            return result;
         }
-        if (!rootNode && result != VALUE_NONE)
+        // 根节点判违规(±24999): 不赋所有rootMoves并截断, 让搜索正常展开,
+        // 内部节点rule_judge会给"维持循环"的线+24999, "脱离循环"的线正常分,
+        // 从而正确选到制胜着法(马八进七而非兵九进一)
+        if (rjRet && rootNode && result != VALUE_DRAW)
         {
-            assert(result != VALUE_DRAW);
-
-            // SkyRule: ±24999是确定的违规判负分，直接返回不截断
-            if (result >= Value(24999) || result <= Value(-24999))
-                return result;
-
-            // 2 fold result is mate for us, the only chance for the opponent is to get a draw
-            // We can guarantee to get at least a draw score during searching for that line
-            if (result > VALUE_DRAW)
-                alpha = std::max(alpha, VALUE_DRAW - 1);
-            // 2 fold result is mated for us, the only chance for us is to get a draw
-            // We can guarantee to get no more than a draw score during searching for that line
-            else
-                beta = std::min(beta, VALUE_DRAW + 1);
+            // 不截断, 继续搜索; 仅当result是±24999时让搜索自行区分着法
+        }
+        else if (rjRet && rootNode && result == VALUE_DRAW)
+        {
+            return value_draw(nodes);
         }
 
         if (threads.stop.load(std::memory_order_relaxed) || ss->ply >= MAX_PLY)
