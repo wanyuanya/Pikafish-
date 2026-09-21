@@ -702,7 +702,11 @@ void Position::do_move(Move                      m,
     st->capturedPiece = captured;
 
     // Calculate checkers bitboard (if move gives check)
-    st->checkersBB = givesCheck ? checkers_to(us, king_square(them)) : Bitboard(0);
+    // SkyRule: 不依赖givesCheck参数, 直接计算确保UCI走moves时checkersBB正确
+    st->checkersBB = checkers_to(us, king_square(them));
+    // SkyRule: UCI走moves时givesCheck=false导致check10漏更新, 这里补更新
+    if (!givesCheck && st->checkersBB && st->check10[us] <= 10)
+        ++st->check10[us];
     assert(givesCheck == bool(checkers_to(us, king_square(them))));
 
     sideToMove = ~sideToMove;
@@ -1549,19 +1553,38 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
 // perpetual check repetition or perpetual chase repetition that allows a player to claim a game result.
 bool Position::rule_judge(Value& result, int ply) {
 
-    // SkyRule: 长将计数器 - 用原生check10累积将军数
-    // 单子6步两子12步, 吃子重置
+    // SkyRule: 长将检测 - 遍历StateInfo链数连续将军, 不依赖check10
+    // 多子连将最多8次, 第8次判负
     if (currentRule == SKY_RULE && ply <= 1)
     {
-        for (Color c : {WHITE, BLACK})
+        // 遍历StateInfo链数连续将军, 不依赖check10
+        const StateInfo* sp = st;
+        int cntW = 0, cntB = 0;
+        int steps = 0;
+        while (sp->previous && steps < 20)
         {
-            int cnt = st->check10[c];
-            if (cnt >= 6)
+            if (sp->checkersBB)
             {
-                // c方连续将军超限
-                result = c == sideToMove ? Value(-24999) : Value(24999);
-                return true;
+                // 这步走完后对方被将军, 将军方=sp的走子方
+                // sp->move的from_sq上的子颜色=将军方
+                // 用moved_piece判断
+                Piece pc = moved_piece(sp->move);
+                Color mc = color_of(pc);
+                if (mc == WHITE) cntW++;
+                else cntB++;
             }
+            sp = sp->previous;
+            steps++;
+        }
+        if (cntW >= 6)
+        {
+            result = (WHITE == sideToMove) ? Value(-24999) : Value(24999);
+            return true;
+        }
+        if (cntB >= 6)
+        {
+            result = (BLACK == sideToMove) ? Value(-24999) : Value(24999);
+            return true;
         }
     }
 
