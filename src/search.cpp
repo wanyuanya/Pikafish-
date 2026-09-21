@@ -750,12 +750,17 @@ Value Search::Worker::search(
         bool rjRet = pos.rule_judge(result, ss->ply);
         if (rjRet)
         {
-            // SkyRule: 根节点命中±24999时不直接return判死, 让引擎真搜索每个rootMove:
-            // 继续走循环着法的子树再命中rule_judge判±24999(负分),
-            // 走变招(打破循环)的子树正常评估. 违规方轮走时变招正常分 > -24999, 引擎自动选变招,
-            // 给违规方在临界点前变招的机会. 只有变招无路可走才一直±24999.
-            if (!(rootNode && (result == Value(24999) || result == Value(-24999))))
-                return result == VALUE_DRAW ? value_draw(nodes) : result;
+            if (rootNode && (result == Value(24999) || result == Value(-24999)))
+            {
+                // 根节点直接判负时rootMoves尚未搜索, 手动赋分使UCI输出±24999
+                for (RootMove& rm : rootMoves)
+                {
+                    rm.score = result;
+                    rm.averageScore = result;
+                    rm.uciScore = result;
+                }
+            }
+            return result == VALUE_DRAW ? value_draw(nodes) : result;
         }
         if (!rootNode && result != VALUE_NONE)
         {

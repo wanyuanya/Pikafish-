@@ -252,6 +252,7 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
 
     // 3-4. Halfmove clock and fullmove number
     ss >> std::skipws >> st->rule60 >> gamePly;
+    st->check10[WHITE] = st->check10[BLACK] = 0;  // SkyRule: 初始局面清零将军计数
 
     if (st->rule60 < 0 || st->rule60 > 119)
         return PositionSetError("Unsupported position. Rule60 counter out of range.");
@@ -1365,15 +1366,31 @@ Value Position::detect_chases(int d, int ply) {
 Value Position::sky_judge_loop(int loopLen, int ply) {
 
     struct Agg {
-        int ck = 0, ch = 0, idle = 0;
-        uint32_t intersect = 0xFFFFFFFFu;  // 各捉步新捉身份的交集
-        uint32_t uni = 0;                  // 并集
-        uint32_t checkPiece = 0xFFFFFFFFu; // 将步将军子身份交集(单子将捉)
+        int ck = 0, ch = 0, idle = 0, kingChase = 0;
+        bool hasStrong = false;  // 是否捉了车(强子)
+        uint32_t intersect = 0xFFFFFFFFu;
+        uint32_t uni = 0;
+        uint32_t checkPiece = 0xFFFFFFFFu;
     };
-    struct SI { Color mover; bool isCheck; uint32_t newIds; uint32_t checkId; };
+    struct SI { Color mover; bool isCheck; uint32_t newIds; uint32_t checkId; bool moverKing; };
 
     Position rollback;
     memcpy((void*)&rollback, (const void*)this, offsetof(Position, filter));
+
+    // SkyRule: chased()依赖idBoard[], 必须先按当前局面初始化(每方独立编号0-15)
+    // 同时记录哪些id是车(强子), 用于区分长捉强子vs弱子
+    uint32_t strongMask[2] = {0, 0};  // [color] = 车的id位掩码
+    {
+        int whiteId = 0, blackId = 0;
+        for (Square s = SQ_A0; s <= SQ_I9; ++s)
+            if (rollback.board[s] != NO_PIECE) {
+                Color c = color_of(rollback.board[s]);
+                int id = c == WHITE ? whiteId++ : blackId++;
+                rollback.idBoard[s] = id;
+                if (type_of(rollback.board[s]) == ROOK)
+                    strongMask[c] |= (1u << id);
+            }
+    }
 
     const Color us = sideToMove;
     const Color them = ~us;
@@ -1401,33 +1418,24 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
         Color      mover = ~rollback.side_to_move();
         bool       isCheck = bool(cur->checkersBB);
 
-        // 走后 mover 方白吃(真捉)的对方子位置 -> 身份
-        Bitboard afterBB = rollback.chased_positions(mover);
-        uint32_t afterIds = toIds(afterBB);
+        // 走后 mover 方白吃(真捉)的对方子 -> 身份(用原生chased())
+        u16 afterIds = rollback.chased(mover);
 
         Square toSq = m.to_sq(), fromSq = m.from_sq();
         int mid = posId[toSq];
         Piece captured = cur->capturedPiece;
+        bool moverKing = type_of(rollback.piece_on(toSq)) == KING;  // undo前取走子类型
         rollback.undo_move(m, captured);   // 轻量回退到走前
         rollback.st = cur->previous;       // StateInfo 沿链回退
         // 身份映射同步回退(重复循环内不吃子)
         posId[toSq] = -1;
         if (mid >= 0) posId[fromSq] = mid;
 
-        // 走前 mover 方白吃的对方子位置 -> 身份
-        Bitboard beforeBB = rollback.chased_positions(mover);
-        uint32_t beforeIds = toIds(beforeBB);
-        uint32_t newIds = afterIds & ~beforeIds;  // 这步新产生的捉
+        // 走前 mover 方白吃的对方子 -> 身份
+        u16 beforeIds = rollback.chased(mover);
+        u16 newIds = afterIds & ~beforeIds;  // 这步新产生的捉
 
-#ifdef SKY_DEBUG  // SKY_DEBUG_DETAIL
-        {
-            auto bbstr=[](Bitboard b){ std::string s; while(b){Square z=pop_lsb(b); s+=(char)('a'+file_of(z)); s+=(char)('0'+rank_of(z)); s+=" "; } return s; };
-            fprintf(stderr,"    k%d mover=%d move=%c%d%c%d ck=%d AFTER[%s] BEFORE[%s]\n",
-                    k,(int)mover,'a'+file_of(fromSq),rank_of(fromSq),'a'+file_of(toSq),rank_of(toSq),(int)isCheck,
-                    bbstr(afterBB).c_str(), bbstr(beforeBB).c_str());
-        }
-#endif
-        steps.push_back({mover, isCheck, newIds, isCheck ? (uint32_t)(1u << posId[fromSq]) : 0u});
+        steps.push_back({mover, isCheck, newIds, isCheck ? (uint32_t)(1u << posId[fromSq]) : 0u, moverKing});
     }
     std::reverse(steps.begin(), steps.end());   // 转为时间顺序
 
@@ -1436,24 +1444,38 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
     for (const SI& s : steps)
     {
         Agg& g = agg[s.mover];
+        uint32_t strongBits = s.newIds & strongMask[~s.mover];
         if (s.isCheck)
         {
+            // 天天规则: 将捉同时出现优先算将, 将军步不算捉
             g.ck++;
-            g.checkPiece &= s.checkId;   // 将军子身份交集
+            g.checkPiece &= s.checkId;
         }
         else if (s.newIds)
-        { g.ch++; g.intersect &= s.newIds; g.uni |= s.newIds; }
+        { g.ch++; g.intersect &= s.newIds; g.uni |= s.newIds; if (s.moverKing) g.kingChase++; if (strongBits) g.hasStrong = true; }
         else
             g.idle++;
     }
 
-    auto longCheck   = [&](Color c){ return agg[c].ck == half; };
+    auto longCheck   = [&](Color c){ return agg[c].ck == half && agg[c].checkPiece != 0; };  // 单子连续将军才是长将
+    auto multiKing   = [&](Color c){ return agg[c].ck == half && agg[c].checkPiece == 0; };  // 两子以上轮流将军
     auto hitMix      = [&](Color c){ return agg[c].idle == 0 && agg[c].ck > 0 && agg[c].ch > 0; };
+    auto singleCheck = [&](Color c){ return hitMix(c) && agg[c].ck == 1; };
+    auto multiCheck  = [&](Color c){ return hitMix(c) && agg[c].ck > 1; };
     auto longChase   = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect != 0; };
     auto splitChase = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect == 0; };
-    auto level      = [&](Color c){ return longCheck(c) ? 3 : hitMix(c) ? 2 : longChase(c) ? 1 : 0; };
+    auto kingChase  = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].kingChase == half; };
+    auto level      = [&](Color c){
+        if (longCheck(c)) return 3;
+        if (multiKing(c)) return 2;  // 多子轮流将军也是禁止(12回合)
+        if (kingChase(c)) return 3;
+        if (singleCheck(c)) return agg[c].hasStrong ? 0 : 1;
+        if (longChase(c))   return agg[c].hasStrong ? 0 : 1;
+        return 0;
+    };
     auto reasonFor  = [&](Color c)->const char* {
         if (longCheck(c)) return "长将";
+        if (kingChase(c)) return "露捉";
         if (longChase(c)) return "长捉";
         if (hitMix(c))    return "将捉交替";
         if (splitChase(c))return "分捉多子";
@@ -1476,13 +1498,29 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
     }
     else
     {
-        // 同级(含双方均非长将长捉): 天天特例——分捉多子方遇对方将军(一将一闲)须变招
-        if (splitChase(us) && agg[them].ck > 0 && !longCheck(them))
-        { loser = us;   reason = "分捉多子"; }
-        else if (splitChase(them) && agg[us].ck > 0 && !longCheck(us))
-        { loser = them; reason = "分捉多子"; }
+        // 双方都禁止(level=1): 天天规则——长捉方(纯捉ck==0)变着
+        if (lvUs == 1 && lvTh == 1)
+        {
+            bool usLong = (agg[us].ck == 0);
+            bool thLong = (agg[them].ck == 0);
+            if (usLong && !thLong)      { loser = us;   reason = reasonFor(us); }
+            else if (thLong && !usLong) { loser = them; reason = reasonFor(them); }
+            else if (splitChase(us) && agg[them].ck > 0 && !longCheck(them))
+            { loser = us;   reason = "分捉多子"; }
+            else if (splitChase(them) && agg[us].ck > 0 && !longCheck(us))
+            { loser = them; reason = "分捉多子"; }
+            else
+                result = VALUE_DRAW;
+        }
         else
-            result = VALUE_DRAW;           // 互长将/互长捉/双方允许: 和
+        {
+            if (splitChase(us) && agg[them].ck > 0 && !longCheck(them))
+            { loser = us;   reason = "分捉多子"; }
+            else if (splitChase(them) && agg[us].ck > 0 && !longCheck(us))
+            { loser = them; reason = "分捉多子"; }
+            else
+                result = VALUE_DRAW;
+        }
     }
 
     if (loser == us)
@@ -1511,6 +1549,22 @@ Value Position::sky_judge_loop(int loopLen, int ply) {
 // perpetual check repetition or perpetual chase repetition that allows a player to claim a game result.
 bool Position::rule_judge(Value& result, int ply) {
 
+    // SkyRule: 长将计数器 - 用原生check10累积将军数
+    // 单子6步两子12步, 吃子重置
+    if (currentRule == SKY_RULE && ply <= 1)
+    {
+        for (Color c : {WHITE, BLACK})
+        {
+            int cnt = st->check10[c];
+            if (cnt >= 6)
+            {
+                // c方连续将军超限
+                result = c == sideToMove ? Value(-24999) : Value(24999);
+                return true;
+            }
+        }
+    }
+
     // Restore rule 60 by adding back the checks
     // SkyRule: 禁用null move后pliesFromNull仍可能被搜索框架重置, 直接用rule60确保完整循环检测
     int end = (currentRule == SKY_RULE)
@@ -1519,7 +1573,7 @@ bool Position::rule_judge(Value& result, int ply) {
                              + std::max(0, st->check10[BLACK] - 10),
                            st->pliesFromNull);
 
-    if (end >= 4 && filter[st->key] >= 1)
+    if (end >= 4 && (currentRule == SKY_RULE || filter[st->key] >= 1))
     {
         int        cnt       = 0;
         StateInfo* stp       = st->previous->previous;
@@ -1537,12 +1591,11 @@ bool Position::rule_judge(Value& result, int ply) {
             {
                 if (currentRule == SKY_RULE)
                 {
-                    // SkyRule(天天象棋): 循环里有将军(连将杀/反击将)时走mate分支判杀棋分,
-                    // 避免把连将杀偶然重复误判成长将负. 无将军的纯长捉循环走sky_judge_loop.
-                    if (checkThem || checkUs)
+                    // SkyRule(天天象棋): 循环里有将军时先判长将负(单子连续将军超限),
+                    // 不是长将(真连将杀/反击将)才走mate分支. 无将军纯长捉走sky_judge_loop.
+                    result = sky_judge_loop(i, ply);
+                    if (result == VALUE_DRAW && (checkThem || checkUs))
                         result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
-                    else
-                        result = sky_judge_loop(i, ply);
                 }
                 else if (!checkThem && !checkUs)
                 {
