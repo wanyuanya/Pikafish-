@@ -192,6 +192,11 @@ std::optional<PositionSetError> Engine::set_position(const std::string&         
     if (err.has_value())
         return err;
 
+    // SkyRule: 手动数将军
+    extern int skyMoveCheckW, skyMoveCheckB;
+    skyMoveCheckW = 0;
+    skyMoveCheckB = 0;
+
     for (const auto& move : moves)
     {
         auto m = UCIEngine::to_move(pos, move);
@@ -199,8 +204,14 @@ std::optional<PositionSetError> Engine::set_position(const std::string&         
         if (m == Move::none())
             return PositionSetError("Illegal move: " + move);
 
+        bool gc = pos.gives_check(m);
         states->emplace_back();
         pos.do_move(m, states->back());
+        if (gc)
+        {
+            if (pos.side_to_move() == BLACK) skyMoveCheckW++;
+            else skyMoveCheckB++;
+        }
     }
 
     return std::nullopt;
