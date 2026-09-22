@@ -39,15 +39,6 @@
 
 namespace Stockfish {
 
-// The reduced SkyRule bundle does not ship the host tree's rule selector.
-// Keep the overlay self-contained when applied to an unmodified Pikafish
-// source tree.  A host tree that already defines Rule should define this
-// guard before including position.h.
-#ifndef SKYRULE_RULE_ENUM_DEFINED
-#define SKYRULE_RULE_ENUM_DEFINED
-enum Rule : u8 { ASIAN_RULE, SKY_RULE };
-#endif
-
 class TranspositionTable;
 struct SharedHistories;
 

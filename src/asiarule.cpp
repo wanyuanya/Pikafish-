@@ -1,6 +1,6 @@
 // AsianRule(亚洲规则)独立实现
 // 旧亚规chased/detect_chases fallback
-#include "position.h"
+#include "asiarule.h"
 #include <cstring>
 namespace Stockfish {
 using namespace Attacks;
@@ -132,6 +132,10 @@ u16 Position::chased(Color c) {
 // 亚规: 马炮捉车即使有根也算真捉
 // 关键: 不用轻量do_move/undo_move(破坏byTypeBB), 用move_piece/remove_piece同步byTypeBB
 Value Position::detect_chases(int d, int ply) {
+
+    // This legacy fallback keeps the public signature used by older host
+    // trees.  The SkyRule loop path below is the active implementation.
+    (void)ply;
 
     // Grant each piece on board a unique id for each side
     int whiteId = 0;
