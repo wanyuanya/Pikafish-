@@ -53,7 +53,7 @@ using namespace Attacks;
 // Default rule: SkyRule (天天象棋规则)
 Rule Position::currentRule = SKY_RULE;
 std::string Position::skyRuleMsg;
-int  Position::rule60MaxPly = 120;   // SkyRule: 60回合不吃子判和阈值
+int  Position::rule60MaxPly = 120;   // SkyRule默认阈值；AsianRule固定100着
 
 // SkyRule: 全局计数器栈
 SkyCounter skyStack[SKY_MAX_PLY];
@@ -1203,6 +1203,10 @@ void Position::undo_move(Move m, Piece captured, int id) {
 // Tests whether a pseudo-legal move is chase legal
 bool Position::rule_judge(Value& result, int ply) {
 
+    // Asian competition rules use 100 plies without a capture or pawn move;
+    // SkyRule keeps its configurable threshold.
+    const int naturalLimit = currentRule == ASIAN_RULE ? 100 : rule60MaxPly;
+
     // SkyRule: 用全局变量检测连将, 不遍历搜索sp链
     // 不限制ply==0: 根节点不截断后搜索会展开, 内部节点也需要判连将
     if (currentRule == SKY_RULE)
@@ -1243,7 +1247,7 @@ bool Position::rule_judge(Value& result, int ply) {
             // after the root, or repeats twice before or at the root.
             if (stp->key == st->key && (++cnt == 2 || ply > i || currentRule == SKY_RULE))
             {
-                if (currentRule == SKY_RULE)
+                if (currentRule == SKY_RULE || currentRule == ASIAN_RULE)
                 {
                     result = sky_judge_loop(i, ply);
                     if (result == VALUE_DRAW && (checkThem || checkUs))
@@ -1264,12 +1268,12 @@ bool Position::rule_judge(Value& result, int ply) {
 
                 // SkyRule: 只有判和(VALUE_DRAW)或判负(±24999)才返回true截断搜索
                 // VALUE_NONE(未达阈值)继续搜索找更长循环
-                if (currentRule == SKY_RULE)
+                if (currentRule == SKY_RULE || currentRule == ASIAN_RULE)
                 {
                     if (result == VALUE_DRAW || result == Value(24999) || result == Value(-24999))
                         return true;
                     // 分捉多子允许招法: 不继续找更长循环, 防止更长循环误判
-                    if (skySplitAllowed)
+                    if (currentRule == SKY_RULE && skySplitAllowed)
                     {
                         result = VALUE_NONE;
                         return true;
@@ -1283,7 +1287,7 @@ bool Position::rule_judge(Value& result, int ply) {
                 if (filter[st->key] <= 1 && !(currentRule == SKY_RULE && (result == Value(24999) || result == Value(-24999))))
                 {
                     // Not exceeding rule 60 and have the same previous step
-                    if (st->rule60 < 120 && st->previous->key == stp->previous->key)
+                    if (st->rule60 < naturalLimit && st->previous->key == stp->previous->key)
                     {
                         // Even if we entering this loop again, it will not lead to a 3 fold repetition
                         StateInfo* prev = st->previous;
@@ -1304,7 +1308,9 @@ bool Position::rule_judge(Value& result, int ply) {
     }
 
     // 60 move rule (120 plies without capture)
-    if (st->rule60 >= rule60MaxPly)
+    // Asian competition rules use 100 plies (50 moves) for the natural
+    // move limit. Keep the configurable SkyRule limit for SkyRule itself.
+    if (st->rule60 >= naturalLimit)
     {
         result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         return true;

@@ -39,6 +39,15 @@
 
 namespace Stockfish {
 
+// The reduced SkyRule bundle does not ship the host tree's rule selector.
+// Keep the overlay self-contained when applied to an unmodified Pikafish
+// source tree.  A host tree that already defines Rule should define this
+// guard before including position.h.
+#ifndef SKYRULE_RULE_ENUM_DEFINED
+#define SKYRULE_RULE_ENUM_DEFINED
+enum Rule : u8 { ASIAN_RULE, SKY_RULE };
+#endif
+
 class TranspositionTable;
 struct SharedHistories;
 
@@ -205,6 +214,20 @@ class Position {
     bool is_mate_threat(Color mover);
 
     // SkyRule/AsianRule: 公开结构体(供asiarule/skyrule模块使用)
+    struct SkyChaseInfo {
+        uint32_t chaseIds = 0;
+        uint32_t attackIds = 0;
+        uint32_t exchangeIds = 0;
+        uint32_t rootedIds = 0;
+        uint32_t cannonConfinedIds = 0;
+        uint32_t knightConfinedIds = 0;
+        uint32_t chaserIds = 0;
+        uint32_t specialChaserIds = 0;
+        uint32_t targetTypeMask = 0;
+        uint32_t chaserTypeMask = 0;
+        uint32_t passedPawnIds = 0;
+        bool     mateThreat = false;
+    };
     struct SkyStep {
         Color    mover;
         bool     isCheck;
@@ -213,15 +236,51 @@ class Position {
         bool     resp;
         Square   from;
         bool     inLoop = true;
+        // AsianRule: stable identities of the pieces that create the chase.
+        // A king/pawn chaser is kept separately for the rule 23-25 exceptions.
+        uint32_t chaserIds = 0;
+        uint32_t specialChaserIds = 0;
+        uint32_t attackIds = 0;
+        uint32_t exchangeIds = 0;
+        uint32_t rootedIds = 0;
+        uint32_t targetTypeMask = 0;
+        uint32_t chaserTypeMask = 0;
+        uint32_t passedPawnIds = 0;
+        uint32_t cannonConfinedIds = 0;
+        uint32_t knightConfinedIds = 0;
+        bool     isKill = false;
     };
     struct SkyAgg {
         int      ck[COLOR_NB] = {0,0};
+        int      kill[COLOR_NB] = {0,0};
         int      ch[COLOR_NB] = {0,0};
+        int      responseChase[COLOR_NB] = {0,0};
         int      idle[COLOR_NB] = {0,0};
         int      expose[COLOR_NB] = {0,0};
         uint32_t chaseTarget[COLOR_NB] = {0,0};
         uint32_t chaseIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
         uint32_t chaseUnion[COLOR_NB] = {0,0};
+        uint32_t attackIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        uint32_t attackUnion[COLOR_NB] = {0,0};
+        uint32_t exchangeUnion[COLOR_NB] = {0,0};
+        uint32_t exchangeIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        uint32_t rootedUnion[COLOR_NB] = {0,0};
+        uint32_t rootedIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        uint32_t cannonConfinedUnion[COLOR_NB] = {0,0};
+        uint32_t knightConfinedUnion[COLOR_NB] = {0,0};
+        uint32_t chaserIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        uint32_t chaserUnion[COLOR_NB] = {0,0};
+        uint32_t targetTypeIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        uint32_t targetTypeUnion[COLOR_NB] = {0,0};
+        uint32_t chaserTypeIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        uint32_t chaserTypeUnion[COLOR_NB] = {0,0};
+        uint32_t passedPawnIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        uint32_t passedPawnUnion[COLOR_NB] = {0,0};
+        int      chaseSpecialOnly[COLOR_NB] = {0,0};
+        int      chaseMixed[COLOR_NB] = {0,0};
+        int      chaseRootedSteps[COLOR_NB] = {0,0};
+        int      chaseUnrootedSteps[COLOR_NB] = {0,0};
+        int      multiTargetSteps[COLOR_NB] = {0,0};
         int      checkPieceCount[COLOR_NB] = {0,0};
         bool     preLoopChase[COLOR_NB] = {false,false};
         bool     split[COLOR_NB] = {false,false};
@@ -255,7 +314,7 @@ class Position {
 
     // SkyRule 新框架: 每步走法的特征判定
     // 走完 m 后, mover 方真捉的无根子id位图(有根不算, 不查牵制)
-    uint32_t              sky_real_chase(Move m, Color mover);
+    SkyChaseInfo          sky_real_chase(Move m, Color mover);
     // 走完 m 后, 走子是将帅且露出了攻击 = 露捉
     bool                  sky_is_expose(Move m, Color mover) const;
     // 走前本方被将军 = 应将
@@ -276,7 +335,7 @@ class Position {
     // Static rule setting
     static Rule        currentRule;
     static std::string skyRuleMsg;
-    static int         rule60MaxPly;   // SkyRule: 60回合不吃子判和阈值(默认120)
+    static int         rule60MaxPly;   // SkyRule可配置；AsianRule固定100着
 
     // Data members
     std::array<Piece, SQUARE_NB>        board;

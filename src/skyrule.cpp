@@ -1,5 +1,6 @@
 // SkyRule(天天象棋规则)独立实现
 #include "skyrule.h"
+#include "asiarule.h"
 #include <algorithm>
 #include <cstring>
 
@@ -7,16 +8,39 @@ namespace Stockfish {
 using namespace Attacks;
 bool skyPreLoopChase[2] = {false, false};
 
-uint32_t Position::sky_real_chase(Move m, Color mover) {
+Position::SkyChaseInfo Position::sky_real_chase(Move m, Color mover) {
 
     Square from = m.from_sq();
     Square to   = m.to_sq();
     Piece  cap  = piece_on(to);
     Color  them = ~mover;
-    uint32_t before = 0, after = 0;
+    SkyChaseInfo beforeInfo, afterInfo;
 
     // 纯几何: them方子能否沿攻击线到达sq(直接读board[])
     auto can_recap = [&](Square sq) -> bool {
+        // AsianRule distinguishes a true root from a geometrical defender:
+        // after the capture, the protecting piece must itself be able to
+        // make a legal recapture.  Keep SkyRule's historical geometric test
+        // below unchanged.
+        if (Position::get_rule() == ASIAN_RULE)
+        {
+            Color savedSide = sideToMove;
+            sideToMove = them;
+            Bitboard recaptures = attackers_to(sq) & pieces(them);
+            bool legalRecapture = false;
+            while (recaptures)
+            {
+                Square s = pop_lsb(recaptures);
+                if (chase_legal(Move(s, sq)))
+                {
+                    legalRecapture = true;
+                    break;
+                }
+            }
+            sideToMove = savedSide;
+            return legalRecapture;
+        }
+
         int sr = rank_of(sq), sc = file_of(sq);
         // 车: 直线扫描
         for (int dr = -1; dr <= 1; ++dr)
@@ -141,34 +165,162 @@ uint32_t Position::sky_real_chase(Move m, Color mover) {
         return false;
     };
 
-    auto collect = [&]() -> uint32_t {
+    // A rook confined to its line by a cannon is not a normal escaping
+    // target in AsianRule.  This covers the cannon-pin exception without
+    // changing the SkyRule geometry path.
+    auto cannonConfined = [&](Square target) -> bool {
+        if (Position::get_rule() != ASIAN_RULE || type_of(piece_on(target)) != ROOK)
+            return false;
+        Square king = king_square(them);
+        Bitboard cannons = pieces(mover, CANNON);
+        while (cannons)
+        {
+            Square cannon = pop_lsb(cannons);
+            Bitboard between = between_bb(king, cannon);
+            if ((between & square_bb(target)) && (between & pieces()) == square_bb(target))
+                return true;
+        }
+        return false;
+    };
+
+    // The "卧槽马" exception: a rook which is under a knight's control and
+    // has no legal rook move is not an ordinary freely-escaping target.  This
+    // is kept separate from the cannon-line exception because Asian rule 14
+    // makes every perpetual chase of that rook illegal.
+    auto knightConfined = [&](Square target) -> bool {
+        if (Position::get_rule() != ASIAN_RULE || type_of(piece_on(target)) != ROOK
+            || !(attackers_to(target) & pieces(mover, KNIGHT)))
+            return false;
+
+        Color savedSide = sideToMove;
+        sideToMove = them;
+        Bitboard moves = attacks_bb<ROOK>(target, pieces()) & ~pieces(them) & ~pieces(KING);
+        bool hasLegalMove = false;
+        while (moves)
+        {
+            Square to = pop_lsb(moves);
+            if (chase_legal(Move(target, to)))
+            {
+                hasLegalMove = true;
+                break;
+            }
+        }
+        sideToMove = savedSide;
+        return !hasLegalMove;
+    };
+
+    auto collect = [&](SkyChaseInfo& out, bool afterPosition) -> uint32_t {
         uint32_t r = 0;
-        Bitboard attackers = pieces(mover) ^ pieces(mover, KING, PAWN);
+        bool asian = Position::get_rule() == ASIAN_RULE;
+        Bitboard attackers = asian ? pieces(mover) : pieces(mover) ^ pieces(mover, KING, PAWN);
         while (attackers) {
             Square    af  = pop_lsb(attackers);
             PieceType at  = type_of(piece_on(af));
-            Bitboard  att = attacks_bb(at, af, pieces());
-            att &= (pieces(them) ^ pieces(them, KING, PAWN))
-                 | (pieces(them, PAWN) & HalfBB[mover]);
+            Bitboard  att = at == PAWN ? attacks_bb<PAWN>(af, mover)
+                                       : attacks_bb(at, af, pieces());
+            Bitboard targets = asian
+                             ? (pieces(them) ^ pieces(them, KING))
+                             : ((pieces(them) ^ pieces(them, KING, PAWN))
+                                | (pieces(them, PAWN) & HalfBB[mover]));
+            att &= targets;
             while (att) {
                 Square sq = pop_lsb(att);
+                // attacks_bb() is pseudo-legal.  A pinned piece, or a king
+                // capture onto an attacked square, is not a legal chase.
+                Color savedSide = sideToMove;
+                sideToMove = mover;
+                bool legalAttack = chase_legal(Move(af, sq));
+                sideToMove = savedSide;
+                if (!legalAttack)
+                    continue;
+
                 bool npRook = (at == KNIGHT || at == CANNON) && type_of(piece_on(sq)) == ROOK;
-                if (!can_recap(sq) || npRook)
+                bool rooted = can_recap(sq);
+                PieceType targetType = type_of(piece_on(sq));
+                bool passedPawn = targetType == PAWN && (HalfBB[mover] & sq);
+                bool confined = cannonConfined(sq);
+                bool horseConfined = knightConfined(sq);
+
+                // AsianRule exceptions which remain a chase even when the
+                // target has a real protector: knight/cannon -> rook,
+                // rook -> cannon, and rook -> crossed-river pawn.
+                bool forceChase = !rooted || npRook
+                               || (asian && at == ROOK
+                                   && (targetType == CANNON || passedPawn));
+                if (asian && at == CANNON && targetType == PAWN && !passedPawn)
+                    // 条文20: 炮台捉未过河兵卒属于允许循环。
+                    forceChase = false;
+                if (asian && confined)
+                {
+                    // A rook confined by a cannon is a special case: a
+                    // rook's line move is not a chase, but a knight/cannon
+                    // attacking that rook is still an impermissible chase.
+                    forceChase = at == KNIGHT || at == CANNON;
+                    out.cannonConfinedIds |= 1u << (idBoard[sq] & 31);
+                }
+                if (asian && horseConfined)
+                {
+                    // 条文14: 卧槽马牵制不能移动的车，任何子长捉均犯例。
+                    forceChase = true;
+                    out.knightConfinedIds |= 1u << (idBoard[sq] & 31);
+                }
+
+                out.attackIds |= 1u << (idBoard[sq] & 31);
+                if (rooted)
+                    out.rootedIds |= 1u << (idBoard[sq] & 31);
+                if (passedPawn)
+                    out.passedPawnIds |= 1u << (idBoard[sq] & 31);
+
+                // A direct recapture by the chased piece is an offer to
+                // exchange. AsianRule still counts it if another move in
+                // the same perpetual sequence is a real chase.
+                if (afterPosition && forceChase) {
+                    Color savedSide = sideToMove;
+                    sideToMove = them;
+                    Bitboard targetMoves = targetType == PAWN
+                                         ? attacks_bb<PAWN>(sq, them)
+                                         : attacks_bb(targetType, sq, pieces());
+                    // The counter-capture is against the actual attacking
+                    // piece af, not necessarily against the piece that made
+                    // the last move (to).
+                    if ((targetMoves & af) && chase_legal(Move(sq, af)))
+                        out.exchangeIds |= 1u << (idBoard[sq] & 31);
+                    sideToMove = savedSide;
+                }
+
+                if (forceChase) {
                     r |= 1u << (idBoard[sq] & 31);
+                    out.targetTypeMask |= 1u << unsigned(targetType);
+                    if (idBoard[af] >= 0) {
+                        out.chaserIds |= 1u << (idBoard[af] & 31);
+                        out.chaserTypeMask |= 1u << unsigned(at);
+                        if (at == KING || at == PAWN)
+                            out.specialChaserIds |= 1u << (idBoard[af] & 31);
+                    }
+                }
             }
         }
         return r;
     };
 
-    before = collect();
+    collect(beforeInfo, false);
     if (cap) remove_piece(to);
+    int capturedId = idBoard[to];
+    int movingId = idBoard[from];
     move_piece(from, to);
+    idBoard[to] = movingId;
+    idBoard[from] = -1;
     sideToMove = them;
-    after = collect();
+    uint32_t after = collect(afterInfo, true);
+    if (Position::get_rule() == ASIAN_RULE)
+        afterInfo.mateThreat = is_mate_threat(mover);
     sideToMove = mover;
     move_piece(to, from);
+    idBoard[from] = movingId;
+    idBoard[to] = capturedId;
     if (cap) put_piece(cap, to);
-    return after;  // 长捉是持续威胁, 不走diff
+    afterInfo.chaseIds = after;
+    return afterInfo;  // 长捉是持续威胁, 不走diff
 }
 
 // SkyRule 新框架: 提取循环段每步特征
@@ -180,6 +332,10 @@ std::vector<Position::SkyStep> Position::sky_extract_loop(int loopLen) {
     // 建rollback副本
     Position rollback;
     memcpy((void*)&rollback, (const void*)this, offsetof(Position, filter));
+    // The prefix copy intentionally stops before the bloom filter; the Asian
+    // TTC probe uses the full do_move/undo_move path, so preserve a valid
+    // filter in the rollback object as well.
+    memcpy((void*)&rollback.filter, (const void*)&filter, sizeof(BloomFilter));
 
     // 第1遍: 从当前st往前undo loopLen步到循环起点
     std::vector<Move> fwd;
@@ -256,7 +412,8 @@ std::vector<Position::SkyStep> Position::sky_extract_loop(int loopLen) {
             }
         }
 
-        uint32_t chaseIds = rollback.sky_real_chase(m, mover);
+        Position::SkyChaseInfo chaseInfo = rollback.sky_real_chase(m, mover);
+        uint32_t chaseIds = chaseInfo.chaseIds;
         if (resp) chaseIds = 0;
 
         // 实际走m
@@ -269,7 +426,11 @@ std::vector<Position::SkyStep> Position::sky_extract_loop(int loopLen) {
         rollback.idBoard[m.to_sq()]   = moverId;
         rollback.idBoard[m.from_sq()] = -1;
 
-        bool isCheck = bool(rollback.checkers());
+        // The rollback move is applied with move_piece(), which deliberately
+        // does not rebuild StateInfo::checkersBB.  Compute the check directly
+        // from the updated board instead of reading the stale history state.
+        bool isCheck = bool(rollback.checkers_to(mover, rollback.king_square(~mover)));
+        bool isKill = chaseInfo.mateThreat && !isCheck;
 
         // expose差集: 将帅走开后其他子新产生的攻击
         bool expose = false;
@@ -297,7 +458,13 @@ std::vector<Position::SkyStep> Position::sky_extract_loop(int loopLen) {
             fprintf(stderr, "  step mover=%d isCheck=%d chase=0x%x exp=%d resp=%d\n",
                     (int)mover,(int)isCheck,chaseIds,(int)expose,(int)resp);
 
-        steps.push_back({mover, isCheck, chaseIds, expose, resp, m.from_sq(), stepFilter[k] >= 2});
+        steps.push_back({mover, isCheck, chaseIds, expose, resp, m.from_sq(),
+                         stepFilter[k] >= 2, chaseInfo.chaserIds,
+                         chaseInfo.specialChaserIds, chaseInfo.attackIds,
+                         chaseInfo.exchangeIds, chaseInfo.rootedIds,
+                         chaseInfo.targetTypeMask, chaseInfo.chaserTypeMask,
+                         chaseInfo.passedPawnIds, chaseInfo.cannonConfinedIds,
+                         chaseInfo.knightConfinedIds, isKill});
     }
     return steps;
 }
@@ -320,11 +487,48 @@ Position::SkyAgg Position::sky_aggregate(const std::vector<SkyStep>& steps, int 
             agg.ck[c]++;
             checkFromSet[c] |= (1ull << (int(s.from) & 63));
         }
+        else if (s.isKill)
+        {
+            agg.kill[c]++;
+        }
+        else if (s.chaseIds && s.resp)
+        {
+            // A chase made while resolving a check is still relevant to the
+            // mixed "check and chase" rules, but it must not be counted as
+            // an independent perpetual chase for the losing side.
+            agg.responseChase[c]++;
+        }
         else if (s.chaseIds && !s.resp)
         {
             agg.ch[c]++;
             agg.chaseIntersect[c] &= s.chaseIds;
             agg.chaseUnion[c]     |= s.chaseIds;
+            if (popcount(s.chaseIds) > 1)
+                agg.multiTargetSteps[c]++;
+            agg.attackIntersect[c] &= s.attackIds;
+            agg.attackUnion[c]     |= s.attackIds;
+            agg.exchangeUnion[c]   |= s.exchangeIds;
+            agg.exchangeIntersect[c] &= s.exchangeIds;
+            agg.rootedUnion[c]     |= s.rootedIds;
+            agg.rootedIntersect[c] &= s.rootedIds;
+            agg.cannonConfinedUnion[c] |= s.cannonConfinedIds;
+            agg.knightConfinedUnion[c] |= s.knightConfinedIds;
+            agg.chaserIntersect[c] &= s.chaserIds;
+            agg.chaserUnion[c]     |= s.chaserIds;
+            agg.targetTypeIntersect[c] &= s.targetTypeMask;
+            agg.targetTypeUnion[c]     |= s.targetTypeMask;
+            agg.chaserTypeIntersect[c] &= s.chaserTypeMask;
+            agg.chaserTypeUnion[c]     |= s.chaserTypeMask;
+            agg.passedPawnIntersect[c] &= s.passedPawnIds;
+            agg.passedPawnUnion[c]     |= s.passedPawnIds;
+            if (s.rootedIds & s.chaseIds)
+                agg.chaseRootedSteps[c]++;
+            else
+                agg.chaseUnrootedSteps[c]++;
+            if (s.specialChaserIds && !(s.chaserIds & ~s.specialChaserIds))
+                agg.chaseSpecialOnly[c]++;
+            else if (s.specialChaserIds && (s.chaserIds & ~s.specialChaserIds))
+                agg.chaseMixed[c]++;
         }
         else
         {
@@ -355,11 +559,18 @@ Value Position::sky_judge_priority(const SkyAgg& agg, Color stm, int loopLen, in
     (void)ply;
     int half = loopLen / 2;  // 循环回合数
 
+#ifdef SKY_DEBUG
     fprintf(stderr, "SKYDBG loopLen=%d half=%d stm=%d ply=%d ckW=%d chW=%d exW=%d intW=0x%x uniW=0x%x ckB=%d chB=%d exB=%d intB=0x%x uniB=0x%x preW=%d preB=%d\n",
             loopLen, half, (int)stm, ply,
             agg.ck[WHITE], agg.ch[WHITE], agg.expose[WHITE], agg.chaseIntersect[WHITE], agg.chaseUnion[WHITE],
             agg.ck[BLACK], agg.ch[BLACK], agg.expose[BLACK], agg.chaseIntersect[BLACK], agg.chaseUnion[BLACK],
             (int)agg.preLoopChase[WHITE], (int)agg.preLoopChase[BLACK]);
+#endif
+
+    // Both rule sets use the same loop feature extraction, but their
+    // precedence tables are different.
+    if (Position::get_rule() == ASIAN_RULE)
+        return asian_judge_priority(agg, stm, loopLen, ply);
 
     // 判定某方是否违规
     // loserColor = 违规方, 返回对应分数
@@ -371,7 +582,7 @@ Value Position::sky_judge_priority(const SkyAgg& agg, Color stm, int loopLen, in
     // 优先级1: 长将, 2-fold即判
     for (int c = 0; c < COLOR_NB; ++c)
     {
-        if (agg.ck[c] == loopLen)
+        if (agg.ck[c] == half)
             return loserScore((Color)c);
     }
 
@@ -379,7 +590,7 @@ Value Position::sky_judge_priority(const SkyAgg& agg, Color stm, int loopLen, in
     for (int c = 0; c < COLOR_NB; ++c)
     {
         int them = 1 - c;
-        bool themLongCheck = (agg.ck[them] == loopLen);
+        bool themLongCheck = (agg.ck[them] == half);
         if (agg.expose[c] > 0 && !themLongCheck)
             return loserScore((Color)c);
     }
@@ -430,10 +641,12 @@ Value Position::sky_judge_priority(const SkyAgg& agg, Color stm, int loopLen, in
     }
 
     // 优先级7: 都不违规
+#ifdef SKY_DEBUG
     fprintf(stderr, "SKYDBG PRIORITY7 loopLen=%d half=%d stm=%d ckW=%d chW=%d ckB=%d chB=%d\n",
             loopLen, half, (int)stm,
             agg.ck[WHITE], agg.ch[WHITE],
             agg.ck[BLACK], agg.ch[BLACK]);
+#endif
     return VALUE_DRAW;
 }
 

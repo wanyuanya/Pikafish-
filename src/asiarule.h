@@ -12,7 +12,7 @@ namespace Stockfish {
 // 返回+24999/-24999=违规, VALUE_DRAW=和棋
 Value asian_judge_priority(const Position::SkyAgg& agg, Color stm, int loopLen, int ply);
 
-// 条文4: 长杀检测——走子后是否形成杀势(下一步将死)
-bool is_mate_threat(Color mover);
+// 条文4: 长杀检测——成员函数 Position::is_mate_threat() 在 position.h
+// 声明并由 asiariule.cpp 实现。
 
 }  // namespace Stockfish
