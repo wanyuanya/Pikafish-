@@ -17,6 +17,7 @@
 */
 
 #include "position.h"
+#include "skyrule.h"
 
 #include <algorithm>
 #include <array>
@@ -53,6 +54,10 @@ using namespace Attacks;
 Rule Position::currentRule = SKY_RULE;
 std::string Position::skyRuleMsg;
 int  Position::rule60MaxPly = 120;   // SkyRule: 60回合不吃子判和阈值
+
+// SkyRule: 全局计数器栈
+SkyCounter skyStack[SKY_MAX_PLY];
+int        skyStackPly = 0;
 
 namespace Zobrist {
 
@@ -561,6 +566,10 @@ void Position::do_move(Move                      m,
     assert(m.is_ok());
     assert(&newSt != st);
 
+    // SkyRule: 走前状态记录
+    uint32_t skyChaseIds = 0;  // 预留: chase在rule_judge时用rollback算
+    bool     skyWasResp  = bool(st->checkersBB);  // 走前被将=应将
+
     // Update the bloom filter
     ++filter[st->key];
 
@@ -715,6 +724,53 @@ void Position::do_move(Move                      m,
     assert(dp.pc != NO_PIECE);
     assert(!bool(captured) ^ (dp.remove_sq != SQ_NONE));
     assert(dp.from != SQ_NONE && dp.to != SQ_NONE);
+
+    // SkyRule: push skyStack. 从上层继承, 本步更新
+    if (skyStackPly < SKY_MAX_PLY - 1)
+    {
+        int p = ++skyStackPly;
+        SkyCounter& cur = skyStack[p];
+        SkyCounter& prev = skyStack[p-1];
+
+        // 继承上层
+        std::memcpy(&cur, &prev, sizeof(SkyCounter));
+
+        // 本步走子方 = us (走m前的sideToMove)
+        // 吃子清零
+        if (captured)
+        {
+            cur.checkSteps[WHITE] = cur.checkSteps[BLACK] = 0;
+            cur.chaseSteps[WHITE] = cur.chaseSteps[BLACK] = 0;
+            cur.exposeSteps[WHITE] = cur.exposeSteps[BLACK] = 0;
+            cur.chaseTarget[WHITE] = cur.chaseTarget[BLACK] = 0;
+            cur.checkMask[WHITE] = cur.checkMask[BLACK] = 0;
+            cur.sinceCapture = 0;
+        }
+        else
+            ++cur.sinceCapture;
+
+        // 应将: 走前 checkersBB 非空
+        bool resp = skyWasResp;
+        cur.respStep[us] = resp;
+
+        // 将军
+        if (givesCheck)
+        {
+            cur.checkSteps[us]++;
+            cur.checkMask[us] |= (1u << (int(from) & 31));
+        }
+        else
+        {
+            // 非将军步, 清将军子mask(连续将军才累加)
+            cur.checkMask[us] = 0;
+        }
+
+        // 真捉: chaseSteps在rule_judge时用rollback算, 这里只记应将和将军
+        (void)skyChaseIds;
+        // 露捉: 走子是将帅
+        if (type_of(piece_on(from)) == KING)
+            cur.exposeSteps[us]++;
+    }
 }
 
 
@@ -744,6 +800,10 @@ void Position::undo_move(Move m) {
     // Finally point our state pointer back to the previous state
     st = st->previous;
     --gamePly;
+
+    // SkyRule: pop skyStack
+    if (skyStackPly > 0)
+        --skyStackPly;
 
     // Update the bloom filter
     --filter[st->key];
@@ -1141,429 +1201,6 @@ void Position::undo_move(Move m, Piece captured, int id) {
 
 
 // Tests whether a pseudo-legal move is chase legal
-bool Position::chase_legal(Move m) const {
-
-    assert(m.is_ok());
-
-    Color    us       = sideToMove;
-    Square   from     = m.from_sq();
-    Square   to       = m.to_sq();
-    Bitboard occupied = (pieces() ^ from) | to;
-
-    assert(color_of(moved_piece(m)) == us);
-    assert(piece_on(king_square(us)) == make_piece(us, KING));
-
-    // If the moving piece is a king, check whether the destination
-    // square is not under new attack after the move.
-    if (type_of(piece_on(from)) == KING)
-        return !(checkers_to(~us, to, occupied));
-
-    // A non-king move is chase legal if the king is not under new attack after the move.
-    return !(checkers_to(~us, king_square(us), occupied) & ~square_bb(to));
-}
-
-
-// Calculates the chase information for a given color.
-u16 Position::chased(Color c) {
-
-    u16 chase = 0;
-
-    std::swap(c, sideToMove);
-
-    // King and pawn can legally perpetual chase
-    Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
-    while (attackers)
-    {
-        Square    from         = pop_lsb(attackers);
-        PieceType attackerType = type_of(piece_on(from));
-        Bitboard  attacks      = attacks_bb(attackerType, from, pieces());
-
-        // Restrict to pinners if pinned, otherwise exclude attacks on unpromoted pawns and checks
-        if (blockers_for_king(sideToMove) & from)
-            attacks &= pinners(~sideToMove) & ~pieces(KING);
-        else
-            attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
-                     | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
-
-        while (attacks)
-        {
-            Square to = pop_lsb(attacks);
-            Move   m  = Move(from, to);
-
-            if (chase_legal(m))
-            {
-                // Attacks against stronger pieces
-                if ((attackerType == KNIGHT || attackerType == CANNON)
-                    && type_of(piece_on(to)) == ROOK)
-                    chase |= (1 << idBoard[to]);
-                else if ((attackerType == ADVISOR || attackerType == BISHOP)
-                         && type_of(piece_on(to)) & 1)
-                    chase |= (1 << idBoard[to]);
-                // Attacks against potentially unprotected pieces
-                else
-                {
-                    bool trueChase             = true;
-                    const auto& [captured, id] = do_move(m);
-                    Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
-                    while (recaptures)
-                    {
-                        Square s = pop_lsb(recaptures);
-                        if (chase_legal(Move(s, to)))
-                        {
-                            trueChase = false;
-                            break;
-                        }
-                    }
-                    undo_move(m, captured, id);
-
-                    if (trueChase)
-                    {
-                        // Exclude mutual/symmetric attacks except pins
-                        if (attackerType == type_of(piece_on(to)))
-                        {
-                            sideToMove = ~sideToMove;
-                            if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
-                                || !chase_legal(Move(to, from)))
-                                chase |= (1 << idBoard[to]);
-                            sideToMove = ~sideToMove;
-                        }
-                        else
-                            chase |= (1 << idBoard[to]);
-                    }
-                }
-            }
-        }
-    }
-
-    std::swap(c, sideToMove);
-
-    return chase;
-}
-
-// SkyRule: 和chased()逻辑相同，但按位置(Bitboard)返回被捉子集合
-// 用于并行规则：两个相同防守子交替补同一位置时，按位置算长捉
-Bitboard Position::chased_positions(Color c) {
-
-    Bitboard chase = 0;
-
-    std::swap(c, sideToMove);
-
-    Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
-    while (attackers)
-    {
-        Square    from         = pop_lsb(attackers);
-        PieceType attackerType = type_of(piece_on(from));
-        Bitboard  attacks      = attacks_bb(attackerType, from, pieces());
-
-        if (blockers_for_king(sideToMove) & from)
-            attacks &= pinners(~sideToMove) & ~pieces(KING);
-        else
-            attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
-                     | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
-
-        while (attacks)
-        {
-            Square to = pop_lsb(attacks);
-            Move   m  = Move(from, to);
-
-            if (chase_legal(m))
-            {
-                if ((attackerType == KNIGHT || attackerType == CANNON)
-                    && type_of(piece_on(to)) == ROOK)
-                    chase |= square_bb(to);
-                else if ((attackerType == ADVISOR || attackerType == BISHOP)
-                         && type_of(piece_on(to)) & 1)
-                    chase |= square_bb(to);
-                else
-                {
-                    bool trueChase             = true;
-                    const auto& [captured, id] = do_move(m);
-                    Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
-                    while (recaptures)
-                    {
-                        Square s = pop_lsb(recaptures);
-                        if (chase_legal(Move(s, to)))
-                        {
-                            trueChase = false;
-                            break;
-                        }
-                    }
-                    undo_move(m, captured, id);
-
-                    if (trueChase)
-                    {
-                        if (attackerType == type_of(piece_on(to)))
-                        {
-                            sideToMove = ~sideToMove;
-                            if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
-                                || !chase_legal(Move(to, from)))
-                                chase |= square_bb(to);
-                            sideToMove = ~sideToMove;
-                        }
-                        else
-                            chase |= square_bb(to);
-                    }
-                }
-            }
-        }
-    }
-
-    std::swap(c, sideToMove);
-
-    return chase;
-}
-
-// Detects chases from state st - d to state st
-Value Position::detect_chases(int d, int ply) {
-
-    // Grant each piece on board a unique id for each side
-    int whiteId = 0;
-    int blackId = 0;
-    for (Square s = SQ_A0; s <= SQ_I9; ++s)
-        if (board[s] != NO_PIECE)
-            idBoard[s] = color_of(board[s]) == WHITE ? whiteId++ : blackId++;
-
-    Color us = sideToMove, them = ~us;
-
-    // Rollback until we reached st - d
-    u16 chase[COLOR_NB] = {0xFFFF, 0xFFFF};
-    for (int i = 0; i < d; ++i)
-    {
-        if (st->checkersBB)
-        {
-            return VALUE_DRAW;
-        }
-        else if (!chase[~sideToMove])
-        {
-            if (!chase[sideToMove])
-                break;
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
-        }
-        else
-        {
-            u16 after = chased(~sideToMove);
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
-            // Take the exact diff to detect the chase
-            u16 before = chased(sideToMove);
-            chase[sideToMove] &= after & ~before;
-        }
-    }
-
-    return bool(chase[us]) ^ bool(chase[them]) ? chase[us] ? Value(-24999) : Value(24999)
-                                               : VALUE_DRAW;
-}
-
-
-// ============================================================================
-// SkyRule(天天象棋规则) 循环判定
-// 逐着分析循环中每步的性质: 将(check) / 捉(chase) / 闲(idle)。
-// 关键: 用跨局面稳定的"棋子身份"追踪被捉子, 从而区分
-//   - 步步捉同一个子(含该子来回逃, 车追移动炮) = 长捉同一子(禁止)
-//   - 步步捉但目标身份在变(一子分捉多子)       = 分捉(对方纯闲时允许)
-// ============================================================================
-Value Position::sky_judge_loop(int loopLen, int ply) {
-
-    struct Agg {
-        int ck = 0, ch = 0, idle = 0, kingChase = 0;
-        bool hasStrong = false;  // 是否捉了车(强子)
-        uint32_t intersect = 0xFFFFFFFFu;
-        uint32_t uni = 0;
-        uint32_t checkPiece = 0xFFFFFFFFu;
-    };
-    struct SI { Color mover; bool isCheck; uint32_t newIds; uint32_t afterIds; uint32_t checkId; bool moverKing; bool moverRook; };
-
-    Position rollback;
-    memcpy((void*)&rollback, (const void*)this, offsetof(Position, filter));
-
-    // SkyRule: chased()依赖idBoard[], 必须先按当前局面初始化(每方独立编号0-15)
-    // 同时记录哪些id是车(强子), 用于区分长捉强子vs弱子
-    uint32_t strongMask[2] = {0, 0};  // [color] = 车的id位掩码
-    {
-        int whiteId = 0, blackId = 0;
-        for (Square s = SQ_A0; s <= SQ_I9; ++s)
-            if (rollback.board[s] != NO_PIECE) {
-                Color c = color_of(rollback.board[s]);
-                int id = c == WHITE ? whiteId++ : blackId++;
-                rollback.idBoard[s] = id;
-                if (type_of(rollback.board[s]) == ROOK)
-                    strongMask[c] |= (1u << id);
-            }
-    }
-
-    const Color us = sideToMove;
-    const Color them = ~us;
-
-    // 在循环终点建立 位置->稳定身份 映射
-    int posId[SQUARE_NB];
-    for (int i = 0; i < SQUARE_NB; ++i) posId[i] = -1;
-    int nextId = 0;
-    for (Square s = SQ_A0; s <= SQ_I9; ++s)
-        if (board[s] != NO_PIECE) posId[s] = nextId++;
-
-    auto toIds = [&](Bitboard bb) -> uint32_t {
-        uint32_t m = 0;
-        while (bb) { Square s = pop_lsb(bb); if (posId[s] >= 0) m |= (1u << posId[s]); }
-        return m;
-    };
-
-    std::vector<SI> steps;
-    steps.reserve(loopLen);
-
-    for (int k = 0; k < loopLen; ++k)
-    {
-        StateInfo* cur  = rollback.st;      // 走后局面
-        Move       m    = cur->move;
-        Color      mover = ~rollback.side_to_move();
-        bool       isCheck = bool(cur->checkersBB);
-
-        // 走后 mover 方白吃(真捉)的对方子 -> 身份(用原生chased())
-        u16 afterIds = rollback.chased(mover);
-
-        Square toSq = m.to_sq(), fromSq = m.from_sq();
-        int mid = posId[toSq];
-        Piece captured = cur->capturedPiece;
-        bool moverKing = type_of(rollback.piece_on(toSq)) == KING;  // undo前取走子类型
-        bool moverRook = type_of(rollback.piece_on(toSq)) == ROOK;  // 车捉车互捉允许, 马炮捉车禁止
-        rollback.undo_move(m, captured);   // 轻量回退到走前
-        rollback.st = cur->previous;       // StateInfo 沿链回退
-        // 身份映射同步回退(重复循环内不吃子)
-        posId[toSq] = -1;
-        if (mid >= 0) posId[fromSq] = mid;
-
-        // 走前 mover 方白吃的对方子 -> 身份
-        u16 beforeIds = rollback.chased(mover);
-        u16 newIds = afterIds & ~beforeIds;  // 这步新产生的捉
-
-        steps.push_back({mover, isCheck, (uint32_t)newIds, (uint32_t)afterIds, isCheck ? (uint32_t)(1u << posId[fromSq]) : 0u, moverKing, moverRook});
-    }
-    std::reverse(steps.begin(), steps.end());   // 转为时间顺序
-
-    Agg agg[COLOR_NB];
-    int half = loopLen / 2;
-    // 第一遍: 先收集每方将军步走后捉的目标(跨步一将一捉识别需要)
-    uint32_t checkTarget[COLOR_NB] = {0, 0};
-    for (const SI& s : steps)
-        if (s.isCheck) checkTarget[s.mover] |= s.afterIds;
-    for (const SI& s : steps)
-    {
-        Agg& g = agg[s.mover];
-        uint32_t strongBits = s.newIds & strongMask[~s.mover];
-        // 跨步一将一捉: 闲步虽无新捉, 但走后仍捉着将军步那个目标
-        uint32_t persistIds = (!s.isCheck && s.afterIds & checkTarget[s.mover])
-                              ? (s.afterIds & checkTarget[s.mover]) : 0u;
-        if (s.isCheck)
-        {
-            // 天天规则: 将捉同时出现优先算将, 将军步不单独计ch
-            g.ck++;
-            g.checkPiece &= s.checkId;
-        }
-        else if (s.newIds)
-        { g.ch++; g.intersect &= s.newIds; g.uni |= s.newIds; if (s.moverKing) g.kingChase++; if (strongBits) g.hasStrong = true; }
-        else if (persistIds && !(s.moverRook && (persistIds & strongMask[~s.mover])))
-        {
-            // 借将掩护持续捉同一子 = 一将一捉
-            // 车捉车(走子是车且捉的是强子)互捉允许; 马炮捉车/捉弱子禁止
-            g.ch++; g.intersect &= persistIds; g.uni |= persistIds;
-        }
-        else
-            g.idle++;
-    }
-
-    auto longCheck   = [&](Color c){ return agg[c].ck == half && agg[c].checkPiece != 0; };  // 单子连续将军才是长将
-    auto multiKing   = [&](Color c){ return agg[c].ck == half && agg[c].checkPiece == 0; };  // 两子以上轮流将军
-    auto hitMix      = [&](Color c){ return agg[c].idle == 0 && agg[c].ck > 0 && agg[c].ch > 0; };
-    auto singleCheck = [&](Color c){ return hitMix(c) && agg[c].ck == 1; };
-    auto multiCheck  = [&](Color c){ return hitMix(c) && agg[c].ck > 1; };
-    auto longChase   = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect != 0; };
-    auto splitChase = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect == 0; };
-    auto kingChase  = [&](Color c){ return agg[c].ck == 0 && agg[c].ch == half && agg[c].kingChase == half; };
-    auto level      = [&](Color c){
-        if (longCheck(c)) return 3;
-        if (multiKing(c)) return 2;  // 多子轮流将军也是禁止(12回合)
-        if (kingChase(c)) return 3;
-        if (singleCheck(c)) return agg[c].hasStrong ? 0 : 1;
-        if (longChase(c))   return agg[c].hasStrong ? 0 : 1;
-        return 0;
-    };
-    auto reasonFor  = [&](Color c)->const char* {
-        if (longCheck(c)) return "长将";
-        if (kingChase(c)) return "露捉";
-        if (longChase(c)) return "长捉";
-        if (hitMix(c))    return "将捉交替";
-        if (splitChase(c))return "分捉多子";
-        return "违规着法";
-    };
-
-    Value result = VALUE_DRAW;
-    Color loser = COLOR_NB;
-    const char* reason = nullptr;
-
-    int lvUs = level(us), lvTh = level(them);
-
-    if (lvUs > lvTh)
-    {
-        loser = us;   reason = reasonFor(us);
-    }
-    else if (lvTh > lvUs)
-    {
-        loser = them; reason = reasonFor(them);
-    }
-    else
-    {
-        // 双方都禁止(level=1): 天天规则——长捉方(纯捉ck==0)变着
-        if (lvUs == 1 && lvTh == 1)
-        {
-            bool usLong = (agg[us].ck == 0);
-            bool thLong = (agg[them].ck == 0);
-            if (usLong && !thLong)      { loser = us;   reason = reasonFor(us); }
-            else if (thLong && !usLong) { loser = them; reason = reasonFor(them); }
-            else if (splitChase(us) && agg[them].ck > 0 && !longCheck(them))
-            { loser = us;   reason = "分捉多子"; }
-            else if (splitChase(them) && agg[us].ck > 0 && !longCheck(us))
-            { loser = them; reason = "分捉多子"; }
-            else
-                result = VALUE_DRAW;
-        }
-        else
-        {
-            if (splitChase(us) && agg[them].ck > 0 && !longCheck(them))
-            { loser = us;   reason = "分捉多子"; }
-            else if (splitChase(them) && agg[us].ck > 0 && !longCheck(us))
-            { loser = them; reason = "分捉多子"; }
-            else
-                result = VALUE_DRAW;
-        }
-    }
-
-    if (loser == us)
-    {
-        result = Value(-24999);
-        Position::set_sky_rule_msg(std::string("我方") + reason + ",违规判负");
-    }
-    else if (loser == them)
-    {
-        result = Value(24999);
-        Position::set_sky_rule_msg(std::string("对方") + reason + ",违规判负");
-    }
-    else
-    {
-        Position::set_sky_rule_msg("");
-    }
-
-#ifdef SKY_DEBUG  // SKY_DEBUG_ON
-    fprintf(stderr, "SKY JUDGE ply=%d us=%d result=%d\n", ply, (int)us, (int)result);
-#endif
-    return result;
-}
-
-
-// SkyRule: 保存position moves后的将军计数, rule_judge用这个不遍历搜索sp链
-int skyMoveCheckW = 0, skyMoveCheckB = 0;
-
-// Tests whether the position may end the game by rule 60, insufficient material, draw repetition,
-// perpetual check repetition or perpetual chase repetition that allows a player to claim a game result.
 bool Position::rule_judge(Value& result, int ply) {
 
     // SkyRule: 用全局变量检测连将, 不遍历搜索sp链
@@ -1608,8 +1245,6 @@ bool Position::rule_judge(Value& result, int ply) {
             {
                 if (currentRule == SKY_RULE)
                 {
-                    // SkyRule(天天象棋): 循环里有将军时先判长将负(单子连续将军超限),
-                    // 不是长将(真连将杀/反击将)才走mate分支. 无将军纯长捉走sky_judge_loop.
                     result = sky_judge_loop(i, ply);
                     if (result == VALUE_DRAW && (checkThem || checkUs))
                         result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
@@ -1618,6 +1253,7 @@ bool Position::rule_judge(Value& result, int ply) {
                 {
                     Position rollback;
                     memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
+                    skySplitAllowed = false;
                     result = rollback.detect_chases(i, ply);
                 }
                 else
@@ -1632,6 +1268,12 @@ bool Position::rule_judge(Value& result, int ply) {
                 {
                     if (result == VALUE_DRAW || result == Value(24999) || result == Value(-24999))
                         return true;
+                    // 分捉多子允许招法: 不继续找更长循环, 防止更长循环误判
+                    if (skySplitAllowed)
+                    {
+                        result = VALUE_NONE;
+                        return true;
+                    }
                 }
                 else if (result == VALUE_DRAW || cnt == 2)
                     return true;

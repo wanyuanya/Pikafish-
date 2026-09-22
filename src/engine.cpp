@@ -116,15 +116,11 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add("ScoreType", Option("cp Elo", "cp"));
 
     options.add(  //
-      "Rule", Option("AsianRule ChineseRule SkyRule ComputerRule", "SkyRule", [](const Option& o) {
+      "Rule", Option("AsianRule SkyRule", "SkyRule", [](const Option& o) {
           if (o == "AsianRule")
               Position::set_rule(ASIAN_RULE);
-          else if (o == "ChineseRule")
-              Position::set_rule(CHINESE_RULE);
           else if (o == "SkyRule")
               Position::set_rule(SKY_RULE);
-          else if (o == "ComputerRule")
-              Position::set_rule(COMPUTER_RULE);
           return std::nullopt;
       }));
 
@@ -196,6 +192,12 @@ std::optional<PositionSetError> Engine::set_position(const std::string&         
     extern int skyMoveCheckW, skyMoveCheckB;
     skyMoveCheckW = 0;
     skyMoveCheckB = 0;
+
+    // SkyRule: 清零 skyStack
+    extern SkyCounter skyStack[];
+    extern int        skyStackPly;
+    skyStackPly = 0;
+    std::memset(&skyStack[0], 0, sizeof(SkyCounter));
 
     for (const auto& move : moves)
     {

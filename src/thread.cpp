@@ -312,6 +312,24 @@ void ThreadPool::start_thinking(Position& pos, StateListPtr& states, Search::Lim
         for (const auto& m : MoveList<LEGAL>(pos))
             rootMoves.emplace_back(m);
 
+    // E1: 根节点per-move skyrule判决
+    {
+        if (pos.rule60_count() > 0)
+        {
+            for (auto& rm : rootMoves)
+            {
+                StateInfo st;
+                pos.do_move(rm.pv[0], st);
+                Value r = VALUE_NONE;
+                bool hit = pos.rule_judge(r, 1);
+                pos.undo_move(rm.pv[0]);
+
+                if (hit && (r == Value(24999) || r == Value(-24999)))
+                    rm.score = r;
+            }
+        }
+    }
+
     // After ownership transfer 'states' becomes empty, so if we stop the search
     // and call 'go' again without setting a new position states.get() == nullptr.
     assert(states.get() || setupStates.get());

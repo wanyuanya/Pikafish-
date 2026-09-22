@@ -137,7 +137,7 @@ void UCIEngine::loop() {
             print_info_string(engine.thread_allocation_information_as_string());
             go(is);
         }
-        else if (token == "position")
+        else if (token == "position" || token == "fen")
             position(is);
         else if (token == "ucinewgame")
             engine.search_clear();
@@ -292,7 +292,7 @@ void UCIEngine::bench(std::istream& args) {
         }
         else if (token == "setoption")
             setoption(is);
-        else if (token == "position")
+        else if (token == "position" || token == "fen")
             position(is);
         else if (token == "ucinewgame")
         {
@@ -356,7 +356,7 @@ void UCIEngine::benchmark(std::istream& args) {
             engine.go(limits);
             engine.wait_for_search_finished();
         }
-        else if (token == "position")
+        else if (token == "position" || token == "fen")
             position(is);
         else if (token == "ucinewgame")
         {
@@ -426,7 +426,7 @@ void UCIEngine::benchmark(std::istream& args) {
 
             updateHashfullReadings();
         }
-        else if (token == "position")
+        else if (token == "position" || token == "fen")
             position(is);
         else if (token == "ucinewgame")
         {
