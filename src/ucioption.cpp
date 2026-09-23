@@ -163,7 +163,11 @@ Option& Option::operator=(const std::string& v) {
         std::string        token;
         std::istringstream ss(defaultValue);
         while (ss >> token)
+        {
+            if (token == "var" || comboMap.count(token))
+                continue;
             comboMap.add(token, Option());
+        }
         if (!comboMap.count(v) || v == "var")
             return *this;
     }
@@ -192,17 +196,8 @@ std::ostream& operator<<(std::ostream& os, const OptionsMap& om) {
                 const Option& o = it.second;
                 os << "\noption name " << it.first << " type " << o.type;
 
-                if (o.type == "check")
+                if (o.type == "check" || o.type == "combo")
                     os << " default " << o.defaultValue;
-
-                else if (o.type == "combo")
-                {
-                    os << " default " << o.currentValue;
-                    std::string token;
-                    std::istringstream ss(o.defaultValue);
-                    while (ss >> token)
-                        os << " var " << token;
-                }
 
                 else if (o.type == "string")
                 {

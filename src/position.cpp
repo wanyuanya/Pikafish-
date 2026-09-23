@@ -1,4 +1,4 @@
-/*
+﻿/*
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2026 The Stockfish developers (see AUTHORS file)
 
@@ -17,7 +17,6 @@
 */
 
 #include "position.h"
-#include "skyrule.h"
 
 #include <algorithm>
 #include <array>
@@ -26,10 +25,8 @@
 #include <cstddef>
 #include <initializer_list>
 #include <cstring>
-#include <vector>
 #include <iomanip>
 #include <iostream>
-#include <set>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -50,14 +47,9 @@ namespace Stockfish {
 
 using namespace Attacks;
 
-// Default rule: SkyRule (天天象棋规则)
-Rule Position::currentRule = SKY_RULE;
-std::string Position::skyRuleMsg;
-int  Position::rule60MaxPly = 120;   // SkyRule默认阈值；AsianRule固定100着
-
-// SkyRule: 全局计数器栈
-SkyCounter skyStack[SKY_MAX_PLY];
-int        skyStackPly = 0;
+// XQ repetition-rule option state (defaults: Asian rule)
+bool ChineseRule    = false;
+int  MateThreatDepth = 1;
 
 namespace Zobrist {
 
@@ -257,7 +249,6 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
 
     // 3-4. Halfmove clock and fullmove number
     ss >> std::skipws >> st->rule60 >> gamePly;
-    st->check10[WHITE] = st->check10[BLACK] = 0;  // SkyRule: 初始局面清零将军计数
 
     if (st->rule60 < 0 || st->rule60 > 119)
         return PositionSetError("Unsupported position. Rule60 counter out of range.");
@@ -566,10 +557,6 @@ void Position::do_move(Move                      m,
     assert(m.is_ok());
     assert(&newSt != st);
 
-    // SkyRule: 走前状态记录
-    uint32_t skyChaseIds = 0;  // 预留: chase在rule_judge时用rollback算
-    bool     skyWasResp  = bool(st->checkersBB);  // 走前被将=应将
-
     // Update the bloom filter
     ++filter[st->key];
 
@@ -724,53 +711,6 @@ void Position::do_move(Move                      m,
     assert(dp.pc != NO_PIECE);
     assert(!bool(captured) ^ (dp.remove_sq != SQ_NONE));
     assert(dp.from != SQ_NONE && dp.to != SQ_NONE);
-
-    // SkyRule: push skyStack. 从上层继承, 本步更新
-    if (skyStackPly < SKY_MAX_PLY - 1)
-    {
-        int p = ++skyStackPly;
-        SkyCounter& cur = skyStack[p];
-        SkyCounter& prev = skyStack[p-1];
-
-        // 继承上层
-        std::memcpy(&cur, &prev, sizeof(SkyCounter));
-
-        // 本步走子方 = us (走m前的sideToMove)
-        // 吃子清零
-        if (captured)
-        {
-            cur.checkSteps[WHITE] = cur.checkSteps[BLACK] = 0;
-            cur.chaseSteps[WHITE] = cur.chaseSteps[BLACK] = 0;
-            cur.exposeSteps[WHITE] = cur.exposeSteps[BLACK] = 0;
-            cur.chaseTarget[WHITE] = cur.chaseTarget[BLACK] = 0;
-            cur.checkMask[WHITE] = cur.checkMask[BLACK] = 0;
-            cur.sinceCapture = 0;
-        }
-        else
-            ++cur.sinceCapture;
-
-        // 应将: 走前 checkersBB 非空
-        bool resp = skyWasResp;
-        cur.respStep[us] = resp;
-
-        // 将军
-        if (givesCheck)
-        {
-            cur.checkSteps[us]++;
-            cur.checkMask[us] |= (1u << (int(from) & 31));
-        }
-        else
-        {
-            // 非将军步, 清将军子mask(连续将军才累加)
-            cur.checkMask[us] = 0;
-        }
-
-        // 真捉: chaseSteps在rule_judge时用rollback算, 这里只记应将和将军
-        (void)skyChaseIds;
-        // 露捉: 走子是将帅
-        if (type_of(piece_on(from)) == KING)
-            cur.exposeSteps[us]++;
-    }
 }
 
 
@@ -800,10 +740,6 @@ void Position::undo_move(Move m) {
     // Finally point our state pointer back to the previous state
     st = st->previous;
     --gamePly;
-
-    // SkyRule: pop skyStack
-    if (skyStackPly > 0)
-        --skyStackPly;
 
     // Update the bloom filter
     --filter[st->key];
@@ -1201,37 +1137,238 @@ void Position::undo_move(Move m, Piece captured, int id) {
 
 
 // Tests whether a pseudo-legal move is chase legal
-bool Position::rule_judge(Value& result, int ply) {
+bool Position::chase_legal(Move m) const {
 
-    // Asian competition rules use 100 plies without a capture or pawn move;
-    // SkyRule keeps its configurable threshold.
-    const int naturalLimit = currentRule == ASIAN_RULE ? 100 : rule60MaxPly;
+    assert(m.is_ok());
 
-    // SkyRule: 用全局变量检测连将, 不遍历搜索sp链
-    // 不限制ply==0: 根节点不截断后搜索会展开, 内部节点也需要判连将
-    if (currentRule == SKY_RULE)
+    Color    us       = sideToMove;
+    Square   from     = m.from_sq();
+    Square   to       = m.to_sq();
+    Bitboard occupied = (pieces() ^ from) | to;
+
+    assert(color_of(moved_piece(m)) == us);
+    assert(piece_on(king_square(us)) == make_piece(us, KING));
+
+    // If the moving piece is a king, check whether the destination
+    // square is not under new attack after the move.
+    if (type_of(piece_on(from)) == KING)
+        return !(checkers_to(~us, to, occupied));
+
+    // A non-king move is chase legal if the king is not under new attack after the move.
+    return !(checkers_to(~us, king_square(us), occupied) & ~square_bb(to));
+}
+
+
+// Calculates the chase information for a given color.
+u16 Position::chased(Color c) {
+
+    u16 chase = 0;
+
+    std::swap(c, sideToMove);
+
+    // King and pawn can legally perpetual chase
+    Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
+    while (attackers)
     {
-        if (skyMoveCheckW >= 6 && skyMoveCheckW <= 12)
+        Square    from         = pop_lsb(attackers);
+        PieceType attackerType = type_of(piece_on(from));
+        Bitboard  attacks      = attacks_bb(attackerType, from, pieces());
+
+        // Restrict to pinners if pinned, otherwise exclude attacks on unpromoted pawns and checks
+        if (blockers_for_king(sideToMove) & from)
+            attacks &= pinners(~sideToMove) & ~pieces(KING);
+        else
+            attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
+                     | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
+
+        while (attacks)
         {
-            result = (WHITE == sideToMove) ? Value(-24999) : Value(24999);
-            return true;
-        }
-        if (skyMoveCheckB >= 6 && skyMoveCheckB <= 12)
-        {
-            result = (BLACK == sideToMove) ? Value(-24999) : Value(24999);
-            return true;
+            Square to = pop_lsb(attacks);
+            Move   m  = Move(from, to);
+
+            if (chase_legal(m))
+            {
+                // Attacks against stronger pieces
+                if ((attackerType == KNIGHT || attackerType == CANNON)
+                    && type_of(piece_on(to)) == ROOK)
+                    chase |= (1 << idBoard[to]);
+                else if ((attackerType == ADVISOR || attackerType == BISHOP)
+                         && type_of(piece_on(to)) & 1)
+                    chase |= (1 << idBoard[to]);
+                // Attacks against potentially unprotected pieces
+                else
+                {
+                    bool trueChase             = true;
+                    const auto& [captured, id] = do_move(m);
+                    Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
+                    while (recaptures)
+                    {
+                        Square s = pop_lsb(recaptures);
+                        if (chase_legal(Move(s, to)))
+                        {
+                            trueChase = false;
+                            break;
+                        }
+                    }
+                    undo_move(m, captured, id);
+
+                    if (trueChase)
+                    {
+                        // Exclude mutual/symmetric attacks except pins
+                        if (attackerType == type_of(piece_on(to)))
+                        {
+                            sideToMove = ~sideToMove;
+                            if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
+                                || !chase_legal(Move(to, from)))
+                                chase |= (1 << idBoard[to]);
+                            sideToMove = ~sideToMove;
+                        }
+                        else
+                            chase |= (1 << idBoard[to]);
+                    }
+                }
+            }
         }
     }
 
-    // Restore rule 60 by adding back the checks
-    // SkyRule: 禁用null move后pliesFromNull仍可能被搜索框架重置, 直接用rule60确保完整循环检测
-    int end = (currentRule == SKY_RULE)
-                ? st->rule60 + std::max(0, st->check10[WHITE] - 10) + std::max(0, st->check10[BLACK] - 10)
-                : std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)
-                             + std::max(0, st->check10[BLACK] - 10),
-                           st->pliesFromNull);
+    std::swap(c, sideToMove);
 
-    if (end >= 4 && (currentRule == SKY_RULE || filter[st->key] >= 1))
+    return chase;
+}
+
+
+// Detects chases from state st - d to state st
+Value Position::detect_chases(int d, int ply) {
+
+    // Grant each piece on board a unique id for each side
+    int whiteId = 0;
+    int blackId = 0;
+    for (Square s = SQ_A0; s <= SQ_I9; ++s)
+        if (board[s] != NO_PIECE)
+            idBoard[s] = color_of(board[s]) == WHITE ? whiteId++ : blackId++;
+
+    Color us = sideToMove, them = ~us;
+
+    // Rollback until we reached st - d
+    u16 rooks[COLOR_NB]    = {0xFFFF, 0xFFFF};
+    u16 chase[COLOR_NB]     = {0xFFFF, 0xFFFF};
+    u16 newChase[COLOR_NB] = {};
+    newChase[us] = chased(us);
+    for (int i = 0; i < d; ++i)
+    {
+        if (!chase[~sideToMove])
+        {
+            if (!chase[sideToMove])
+                break;
+            undo_move(st->move, st->capturedPiece);
+            st = st->previous;
+        }
+        else
+        {
+            if (st->checkersBB || (ChineseRule && MateThreatDepth && has_mate_threat()))
+            {
+                // Redirect *check* and *mate threat* to *chase all pieces* in Chinese Rule
+                chase[~sideToMove] &= ChineseRule ? 0xFFFF : 0;
+                rooks[~sideToMove]   = 0;
+                undo_move(st->move, st->capturedPiece);
+                st = st->previous;
+            }
+            else
+            {
+                u16 oldChase = chased(~sideToMove);
+                // Calculate rooks pinned by knight
+                u16 flag = 0;
+                if (!ChineseRule && rooks[~sideToMove]
+                    && (blockers_for_king(sideToMove) & pieces(sideToMove, ROOK)))
+                {
+                    Bitboard knights = pinners(~sideToMove) & pieces(~sideToMove, KNIGHT);
+                    while (knights)
+                    {
+                        Square s = pop_lsb(knights);
+                        Bitboard b = between_bb(king_square(sideToMove), s) ^ s;
+                        s = pop_lsb(b);
+                        if (piece_on(s) == make_piece(sideToMove, ROOK))
+                            flag |= 1 << idBoard[s];
+                    }
+                }
+                undo_move(st->move, st->capturedPiece);
+                st = st->previous;
+                // Take the exact diff to detect the chase
+                u16 chases = oldChase & ~newChase[sideToMove];
+                newChase[sideToMove] = chased(sideToMove);
+                if (ChineseRule)
+                    chases = oldChase & ~newChase[sideToMove];
+                else if (i == d - 2)
+                    chases &= ~newChase[sideToMove];
+                rooks[sideToMove] &= chases & flag;
+                // Redirect *chase* to *chase all pieces* in Chinese Rule
+                chase[sideToMove] &= (ChineseRule && chases) ? 0xFFFF : chases;
+            }
+        }
+    }
+
+    // Overrides chases if rooks pinned by knight is being chased
+    if ((!chase[us] && !chase[them]) || (rooks[us] && rooks[them]))
+        return VALUE_DRAW;
+    else if (rooks[us])
+        return mated_in(ply);
+    else if (rooks[them])
+        return mate_in(ply);
+
+    return !chase[us] ? mate_in(ply) : !chase[them] ? mated_in(ply) : VALUE_DRAW;
+}
+
+
+// Calculate mate threat within MateThreatDepth plies (d == -1: null-move probe)
+bool Position::has_mate_threat(Depth d) {
+
+    bool mateThreat = false;
+    if (d == -1)
+    {
+        // Use null move to detect mate threats
+        StateInfo nullSt;
+        do_null_move(nullSt);
+        mateThreat = has_mate_threat(0);
+        undo_null_move();
+    }
+    else if (d < MateThreatDepth)
+    {
+        StateInfo tempSt[2];
+        // Try all check moves and see if we can continuously check to get a mate
+        for (const auto& check : MoveList<LEGAL>(*this))
+        {
+            if (gives_check(check))
+            {
+                do_move(check, tempSt[0]);
+                bool solvable = false;
+                for (const auto& evasion : MoveList<LEGAL>(*this))
+                {
+                    do_move(evasion, tempSt[1]);
+                    solvable = !has_mate_threat(d + 1);
+                    undo_move(evasion);
+                    // If there exists any evasion, the check is solvable
+                    if (solvable)
+                        break;
+                }
+                undo_move(check);
+                // If there exists any check that is not solvable, there is a mate threat
+                if (!solvable)
+                    return true;
+            }
+        }
+    }
+    return mateThreat;
+}
+
+// Tests whether the position may end the game by rule 60, insufficient material, draw repetition,
+// perpetual check repetition or perpetual chase repetition that allows a player to claim a game result.
+bool Position::rule_judge(Value& result, int ply) {
+
+    // Restore rule 60 by adding back the checks
+    int end = std::min(std::max(0, 2 * (st->check10[WHITE] - 10)) + st->rule60
+                     + std::max(0, 2 * (st->check10[BLACK] - 10)), st->pliesFromNull);
+
+    if (end >= 4 && filter[st->key] >= 1)
     {
         int        cnt       = 0;
         StateInfo* stp       = st->previous->previous;
@@ -1245,61 +1382,28 @@ bool Position::rule_judge(Value& result, int ply) {
 
             // Return a score if a position repeats once earlier but strictly
             // after the root, or repeats twice before or at the root.
-            if (stp->key == st->key && (++cnt == 2 || ply > i || currentRule == SKY_RULE))
+            if (stp->key == st->key && (++cnt == 2 || ply > i))
             {
-                if (currentRule == SKY_RULE || currentRule == ASIAN_RULE)
+                if (!checkThem && !checkUs)
                 {
-                    result = sky_judge_loop(i, ply);
-                    if (result == VALUE_DRAW && (checkThem || checkUs))
-                        result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
-                }
-                else if (!checkThem && !checkUs)
-                {
+                    // Copy the current position to a rollback struct, so we don't need to do those moves again
                     Position rollback;
                     memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
-                    skySplitAllowed = false;
+
+                    // Chasing detection
                     result = rollback.detect_chases(i, ply);
                 }
                 else
-                {
                     // Checking detection
                     result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
-                }
 
-                // SkyRule: 只有判和(VALUE_DRAW)或判负(±24999)才返回true截断搜索
-                // VALUE_NONE(未达阈值)继续搜索找更长循环
-                if (currentRule == SKY_RULE || currentRule == ASIAN_RULE)
-                {
-                    if (result == VALUE_DRAW || result == Value(24999) || result == Value(-24999))
-                        return true;
-                    // 分捉多子允许招法: 不继续找更长循环, 防止更长循环误判
-                    if (currentRule == SKY_RULE && skySplitAllowed)
-                    {
-                        result = VALUE_NONE;
-                        return true;
-                    }
-                }
-                else if (result == VALUE_DRAW || cnt == 2)
+                // Catch false mates
+                if (result == VALUE_DRAW || cnt == 2)
                     return true;
 
-                // 2 fold mates need further investigations
-                // SkyRule: 未达阈值(VALUE_NONE)或判和(VALUE_DRAW)时继续找更长循环, 判负(±24999)时不继续
-                if (filter[st->key] <= 1 && !(currentRule == SKY_RULE && (result == Value(24999) || result == Value(-24999))))
-                {
-                    // Not exceeding rule 60 and have the same previous step
-                    if (st->rule60 < naturalLimit && st->previous->key == stp->previous->key)
-                    {
-                        // Even if we entering this loop again, it will not lead to a 3 fold repetition
-                        StateInfo* prev = st->previous;
-                        while ((prev = prev->previous) != stp)
-                            if (filter[prev->key] > 1)
-                                break;
-                        if (prev == stp)
-                            return true;
-                    }
-                    // We know there can't be another fold
-                    break;
-                }
+                // We know there can't be another fold
+                if (filter[st->key] <= 1)
+                    return false;
             }
 
             if (i + 1 <= end)
@@ -1307,17 +1411,8 @@ bool Position::rule_judge(Value& result, int ply) {
         }
     }
 
-    // 60 move rule (120 plies without capture)
-    // Asian competition rules use 100 plies (50 moves) for the natural
-    // move limit. Keep the configurable SkyRule limit for SkyRule itself.
-    if (st->rule60 >= naturalLimit)
-    {
-        result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
-        return true;
-    }
-
-    // SkyRule: 总步数达到400步(200回合)自动判和
-    if (currentRule == SKY_RULE && gamePly >= 400)
+    // 60 move rule
+    if (st->rule60 >= 120)
     {
         result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         return true;

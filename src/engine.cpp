@@ -106,23 +106,18 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add("nodestime", Option(0, 0, 10000));
 
-    options.add("UCI_ShowWDL", Option(true));  // SkyRule: 默认开启胜率(WDL)输出
-
-    // SkyRule: 鲨鱼象棋 Elo 分制支持
-    options.add("Rule60MaxPly", Option(120, 0, 100000, [](const Option& o) -> std::optional<std::string> {
-        Position::set_rule60MaxPly(int(o));
+    options.add("Mate Threat Depth", Option(1, 0, 10, [](const Option& o) {
+        MateThreatDepth = int(o);
         return std::nullopt;
     }));
-    options.add("ScoreType", Option("cp Elo", "cp"));
 
-    options.add(  //
-      "Rule", Option("AsianRule SkyRule", "SkyRule", [](const Option& o) {
-          if (o == "AsianRule")
-              Position::set_rule(ASIAN_RULE);
-          else if (o == "SkyRule")
-              Position::set_rule(SKY_RULE);
+    options.add("Repetition Rule", Option("AsianRule var AsianRule var ChineseRule", "AsianRule",
+      [](const Option& o) {
+          ChineseRule = (o == "ChineseRule");
           return std::nullopt;
       }));
+
+    options.add("UCI_ShowWDL", Option(false));
 
     options.add(  //
       "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {
@@ -188,17 +183,6 @@ std::optional<PositionSetError> Engine::set_position(const std::string&         
     if (err.has_value())
         return err;
 
-    // SkyRule: 手动数将军
-    extern int skyMoveCheckW, skyMoveCheckB;
-    skyMoveCheckW = 0;
-    skyMoveCheckB = 0;
-
-    // SkyRule: 清零 skyStack
-    extern SkyCounter skyStack[];
-    extern int        skyStackPly;
-    skyStackPly = 0;
-    std::memset(&skyStack[0], 0, sizeof(SkyCounter));
-
     for (const auto& move : moves)
     {
         auto m = UCIEngine::to_move(pos, move);
@@ -206,14 +190,8 @@ std::optional<PositionSetError> Engine::set_position(const std::string&         
         if (m == Move::none())
             return PositionSetError("Illegal move: " + move);
 
-        bool gc = pos.gives_check(m);
         states->emplace_back();
         pos.do_move(m, states->back());
-        if (gc)
-        {
-            if (pos.side_to_move() == BLACK) skyMoveCheckW++;
-            else skyMoveCheckB++;
-        }
     }
 
     return std::nullopt;

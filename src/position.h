@@ -42,6 +42,10 @@ namespace Stockfish {
 class TranspositionTable;
 struct SharedHistories;
 
+// XQ repetition-rule options, set from the UCI layer (engine.cpp)
+extern bool ChineseRule;
+extern int  MateThreatDepth;
+
 // StateInfo struct stores information needed to restore a Position object to
 // its previous state when we retract a move. Whenever a move is made on the
 // board (by calling Position::do_move), a StateInfo object must be passed.
@@ -69,22 +73,6 @@ struct StateInfo {
     Move       move;
 };
 
-
-// SkyRule: 每方每步的走法特征计数器, 随 do_move/undo_move 同步维护
-struct SkyCounter {
-    int      checkSteps[COLOR_NB];      // 连续将军步数(按走子方)
-    int      chaseSteps[COLOR_NB];      // 真捉步数(应将步不计)
-    int      exposeSteps[COLOR_NB];     // 露捉步数
-    uint32_t chaseTarget[COLOR_NB];     // 被捉目标id位图(同目标=长捉, 不同=分捉)
-    uint8_t  checkMask[COLOR_NB];       // 将军子from位置位图(区分1/2/3子)
-    int      sinceCapture;              // 距上次吃子步数
-    bool     respStep[COLOR_NB];        // 应将步标记
-};
-
-// SkyRule: 搜索栈, 随深度 push/pop, 不依赖 StateInfo 历史链
-constexpr int SKY_MAX_PLY = 256;
-extern SkyCounter skyStack[SKY_MAX_PLY];
-extern int        skyStackPly;
 
 // A list to keep track of the position states along the setup moves (from the
 // start position to the position just before the search starts). Needed by
@@ -185,97 +173,8 @@ class Position {
     bool  rule_judge(Value& result, int ply = 0);
     int   rule60_count() const;
     u16   chased(Color c);
-    Bitboard chased_positions(Color c);  // SkyRule: 按位置返回被捉子集合(并行规则)
     Value major_material(Color c) const;
     Value major_material() const;
-
-    // Rule setting (SkyRule / AsianRule / etc.)
-    static void set_rule(Rule r) { currentRule = r; }
-    static Rule get_rule() { return currentRule; }
-    static void set_rule60MaxPly(int n) { rule60MaxPly = n; }
-
-    // SkyRule违规信息(用于UCI输出显示)
-    static void        set_sky_rule_msg(const std::string& m) { skyRuleMsg = m; }
-    static std::string get_sky_rule_msg() { return skyRuleMsg; }
-
-    // SkyRule调试: 获取当前局面在filter中的重复次数
-    int debug_filter() const { return filter[st->key]; }
-
-    // 亚规条文4: 长杀检测——走子后是否形成杀势
-    bool is_mate_threat(Color mover);
-
-    // SkyRule/AsianRule: 公开结构体(供asiarule/skyrule模块使用)
-    struct SkyChaseInfo {
-        uint32_t chaseIds = 0;
-        uint32_t attackIds = 0;
-        uint32_t exchangeIds = 0;
-        uint32_t rootedIds = 0;
-        uint32_t cannonConfinedIds = 0;
-        uint32_t knightConfinedIds = 0;
-        uint32_t chaserIds = 0;
-        uint32_t specialChaserIds = 0;
-        uint32_t targetTypeMask = 0;
-        uint32_t chaserTypeMask = 0;
-        uint32_t passedPawnIds = 0;
-        bool     mateThreat = false;
-    };
-    struct SkyStep {
-        Color    mover;
-        bool     isCheck;
-        uint32_t chaseIds;
-        bool     expose;
-        bool     resp;
-        Square   from;
-        bool     inLoop = true;
-        // AsianRule: stable identities of the pieces that create the chase.
-        // A king/pawn chaser is kept separately for the rule 23-25 exceptions.
-        uint32_t chaserIds = 0;
-        uint32_t specialChaserIds = 0;
-        uint32_t attackIds = 0;
-        uint32_t exchangeIds = 0;
-        uint32_t rootedIds = 0;
-        uint32_t targetTypeMask = 0;
-        uint32_t chaserTypeMask = 0;
-        uint32_t passedPawnIds = 0;
-        uint32_t cannonConfinedIds = 0;
-        uint32_t knightConfinedIds = 0;
-        bool     isKill = false;
-    };
-    struct SkyAgg {
-        int      ck[COLOR_NB] = {0,0};
-        int      kill[COLOR_NB] = {0,0};
-        int      ch[COLOR_NB] = {0,0};
-        int      responseChase[COLOR_NB] = {0,0};
-        int      idle[COLOR_NB] = {0,0};
-        int      expose[COLOR_NB] = {0,0};
-        uint32_t chaseTarget[COLOR_NB] = {0,0};
-        uint32_t chaseIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-        uint32_t chaseUnion[COLOR_NB] = {0,0};
-        uint32_t attackIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-        uint32_t attackUnion[COLOR_NB] = {0,0};
-        uint32_t exchangeUnion[COLOR_NB] = {0,0};
-        uint32_t exchangeIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-        uint32_t rootedUnion[COLOR_NB] = {0,0};
-        uint32_t rootedIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-        uint32_t cannonConfinedUnion[COLOR_NB] = {0,0};
-        uint32_t knightConfinedUnion[COLOR_NB] = {0,0};
-        uint32_t chaserIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-        uint32_t chaserUnion[COLOR_NB] = {0,0};
-        uint32_t targetTypeIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-        uint32_t targetTypeUnion[COLOR_NB] = {0,0};
-        uint32_t chaserTypeIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-        uint32_t chaserTypeUnion[COLOR_NB] = {0,0};
-        uint32_t passedPawnIntersect[COLOR_NB] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-        uint32_t passedPawnUnion[COLOR_NB] = {0,0};
-        int      chaseSpecialOnly[COLOR_NB] = {0,0};
-        int      chaseMixed[COLOR_NB] = {0,0};
-        int      chaseRootedSteps[COLOR_NB] = {0,0};
-        int      chaseUnrootedSteps[COLOR_NB] = {0,0};
-        int      multiTargetSteps[COLOR_NB] = {0,0};
-        int      checkPieceCount[COLOR_NB] = {0,0};
-        bool     preLoopChase[COLOR_NB] = {false,false};
-        bool     split[COLOR_NB] = {false,false};
-    };
 
     // Position consistency check, for debugging
     bool                            pos_is_ok() const;
@@ -299,34 +198,10 @@ class Position {
     std::pair<Piece, int> do_move(Move m);
     void                  undo_move(Move m, Piece captured, int id = 0);
     Value                 detect_chases(int d, int ply = 0);
-    // SkyRule(天天象棋规则): 带棋子身份追踪的逐着打/闲循环判定
-    Value                 sky_judge_loop(int loopLen, int ply = 0);
     bool                  chase_legal(Move m) const;
-
-    // SkyRule 新框架: 每步走法的特征判定
-    // 走完 m 后, mover 方真捉的无根子id位图(有根不算, 不查牵制)
-    SkyChaseInfo          sky_real_chase(Move m, Color mover);
-    // 走完 m 后, 走子是将帅且露出了攻击 = 露捉
-    bool                  sky_is_expose(Move m, Color mover) const;
-    // 走前本方被将军 = 应将
-    bool                  sky_is_response(Color mover) const;
-    // 稳定子身份id
-    int                   sky_target_id(Square s) const { return idBoard[s]; }
-
-    // SkyRule 新框架: 循环段提取与聚合
-    std::vector<SkyStep> sky_extract_loop(int loopLen);
-    SkyAgg sky_aggregate(const std::vector<SkyStep>& steps, int loopLen);
-
-    // 优先级判决: 返回+24999/-24999/VALUE_DRAW/VALUE_NONE
-    Value sky_judge_priority(const SkyAgg& agg, Color stm, int loopLen, int ply);
-
+    bool                  has_mate_threat(Depth d = -1);
     template<bool AfterMove = false>
     Key adjust_key60(Key k) const;
-
-    // Static rule setting
-    static Rule        currentRule;
-    static std::string skyRuleMsg;
-    static int         rule60MaxPly;   // SkyRule可配置；AsianRule固定100着
 
     // Data members
     std::array<Piece, SQUARE_NB>        board;
